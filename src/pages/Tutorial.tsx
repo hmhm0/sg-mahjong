@@ -1,0 +1,78 @@
+const TUTORIAL_STEPS = [
+  {
+    title: "The Goal",
+    content: "Mahjong is a game of skill, strategy, and luck. The goal is to be the first player to complete a winning hand: 4 melds + 1 pair (eye). A meld is either a sequence (chi) of three consecutive numbers in the same suit, or a triplet (pung/kong) of three or four identical tiles."
+  },
+  {
+    title: "The Tiles",
+    content: "The game uses 136 tiles plus bonus tiles. There are three suits: Bamboo, Characters, and Dots (1-9 each, 4 copies per tile). Honor tiles include the four Winds (East, South, West, North) and three Dragons (Hong/Red, Fa/Green, Baak/White). Bonus tiles include Flowers, Seasons, and Animals."
+  },
+  {
+    title: "Fei (Joker)",
+    content: "Fei tiles are jokers that can substitute for ANY tile to complete a sequence. They CANNOT be used for pungs or kongs. When drawn, they go into your hand (no need to reveal). Fei can never be discarded. Each fei in your hand at winning reduces your tai by 1."
+  },
+  {
+    title: "Dealing",
+    content: "Each player starts with 13 tiles (dealer gets 14). The dealer (East) begins by discarding one tile face up to the center. Play proceeds clockwise. The game uses a minimum of 4 tai to win, but this can be configured."
+  },
+  {
+    title: "Drawing and Discarding",
+    content: "On your turn, draw a tile from the wall, then discard one tile from your hand face up to the center. You cannot discard Fei tiles. The game continues until someone wins or the wall is exhausted (draw game)."
+  },
+  {
+    title: "Calling Tiles",
+    content: "When a player discards, other players may call it:\n\nChi (Sequence): The next player in turn order may take the discard to form a sequence.\n\nPung (Triplet): Any player may take the discard to form a triplet. Pung overrides Chi.\n\nKong (Quad): Any player may take the discard to form a quadruplet.\n\nWin: Any player may take the discard to complete a winning hand."
+  },
+  {
+    title: "Bonuses",
+    content: "Drawing a Flower, Season, or Animal tile gives you a replacement draw. If you collect matching pairs (Cat + Mouse, Rooster + Centipede), you get bonus points. Flowers and Seasons matching your seat position also give +1 tai each."
+  },
+  {
+    title: "Tai Scoring",
+    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +6 tai\nAll Pungs: +3 tai\nBig Three Dragons: +6 tai\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nFei in hand reduces tai by 1 each. The minimum tai to win is configurable."
+  },
+  {
+    title: "Winning",
+    content: "Win by completing 4 melds + 1 pair. You can win off a discard (someone else's tile completes your hand) or by self-draw (drawing the winning tile yourself). Self-draw gives +1 tai. After winning, the hand is scored and the game resets."
+  },
+  {
+    title: "Tips & Strategy",
+    content: "Keep your hand flexible early on. Discard terminal tiles (1, 9) and honors early unless they match your plan. Pay attention to what other players discard. Use Fei strategically for difficult sequences. Watch for half flush opportunities when you have many tiles of one suit."
+  }
+];
+
+export function Tutorial() {
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 p-4">
+      <div className="max-w-2xl mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl md:text-3xl font-bold text-yellow-300">
+            How to Play
+          </h1>
+          <a href="#/" className="text-green-400 hover:text-green-200 underline text-sm">
+            Back to Menu
+          </a>
+        </div>
+
+        <div className="space-y-4">
+          {TUTORIAL_STEPS.map((step, i) => (
+            <div key={i} className="bg-green-800/40 backdrop-blur rounded-xl p-4 border border-green-700/30">
+              <h2 className="text-lg font-bold text-green-100 mb-2">
+                {i + 1}. {step.title}
+              </h2>
+              <p className="text-green-200/80 text-sm leading-relaxed whitespace-pre-line">
+                {step.content}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 text-center">
+          <a href="#/" className="text-green-400 hover:text-green-200 underline text-sm">
+            Back to Menu
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
