@@ -3,13 +3,15 @@ import type { Wind, Suit } from '../types/mahjong';
 import { isFei, isHonor, sortHand } from './tiles';
 
 // ── Win Detection ──────────────────────────────────────────
+// Single-pass recursive backtracking engine.
+// Correctly handles fei (joker) substitutions in sequences,
+// all pair/meld combinations, and mixed sequence+pung hands.
 
 function tileEqual(a: Tile, b: Tile, allowFei = false): boolean {
   if (a.category === 'fei' && allowFei) return true;
   if (b.category === 'fei' && allowFei) return true;
   if (a.category !== b.category) return false;
   if (a.category === 'suit' && b.category === 'suit') return a.suit === b.suit && a.value === b.value;
-  if (a.category === 'honor' && b.category === 'honor') return a.type === b.type;
   if (a.category === 'bonus' && b.category === 'bonus') return a.bonusType === b.bonusType && a.id === b.id;
   return false;
 }
@@ -17,150 +19,156 @@ function tileEqual(a: Tile, b: Tile, allowFei = false): boolean {
 function removeTiles(hand: Tile[], tiles: Tile[]): Tile[] {
   const remaining = [...hand];
   for (const t of tiles) {
-    const idx = remaining.findIndex(r => tileEqual(r, t, false));
+    const idx = isFei(t)
+      ? remaining.findIndex(r => isFei(r))
+      : remaining.findIndex(r => tileEqual(r, t, false));
     if (idx >= 0) remaining.splice(idx, 1);
   }
   return remaining;
 }
 
-function hasPair(hand: Tile[]): Tile[] | null {
-  for (let i = 0; i < hand.length; i++) {
-    for (let j = i + 1; j < hand.length; j++) {
-      if (tileEqual(hand[i], hand[j]) || isFei(hand[i]) || isFei(hand[j])) {
-        const pair = [hand[i], hand[j]];
-        const remaining = removeTiles(hand, pair);
-        // If we have fei tiles, try them as substitutions
-        const feiInPair = pair.filter(isFei).length;
-        if (feiInPair <= 1) {
-          return pair;
-        }
-        const result = findMelds(remaining);
-        if (result !== null) return pair;
-      }
-    }
-  }
-  return null;
-}
+// ── Unified backtracking meld finder ──
+// Finds 'count' melds from 'hand'. Returns meld tiles or null.
+// At each step: take the first non-fei tile, try all melds containing it.
+// Backtracks through ALL fei assignments for sequences.
+function findMelds(hand: Tile[], count: number): Tile[][] | null {
+  if (count === 0) return hand.length === 0 ? [] : null;
+  if (hand.length < 3) return null;
 
-function findSequence(hand: Tile[]): Tile[] | null {
-  const sorted = sortHand(hand).filter(t => !isFei(t));
-  const feiCount = hand.filter(isFei).length;
-
-  for (let i = 0; i < sorted.length; i++) {
-    const a = sorted[i];
-    if (a.category !== 'suit') continue;
-
-    for (let j = i + 1; j < sorted.length; j++) {
-      const b = sorted[j];
-      for (let k = j + 1; k < sorted.length; k++) {
-        const c = sorted[k];
-        // Check with 0, 1, 2, or 3 fei substitutions
-        for (let feiUsed = 0; feiUsed <= Math.min(3, feiCount); feiUsed++) {
-          if (isSequence(a, b, c, feiUsed)) {
-            const meld: Tile[] = [a, b, c];
-            return meld;
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function isSequence(a: Tile, b: Tile, c: Tile, feiSubs: number): boolean {
-  const nonFei = [a, b, c].filter(t => !isFei(t));
-  if (nonFei.length !== 3 - feiSubs) return false;
-  if (nonFei.some(t => t.category !== 'suit')) return false;
-
-  const vals = nonFei.map(t => (t as any).value).sort((x: number, y: number) => x - y);
-  const suit = (nonFei[0] as any).suit;
-  if (nonFei.some(t => (t as any).suit !== suit)) return false;
-
-  if (feiSubs === 0) {
-    return vals[1] === vals[0] + 1 && vals[2] === vals[1] + 1;
-  }
-  if (feiSubs === 1) {
-    // One fei: need 2 numbers from same suit, consecutive or with a gap
-    if (vals[0] + 1 === vals[1] || vals[0] + 2 === vals[1]) return true;
-    return false;
-  }
-  if (feiSubs === 2) {
-    // Two fei: just need 1 suit tile, any value works
-    return true;
-  }
-  if (feiSubs === 3) {
-    // Three fei: always works (all fei)
-    return true;
-  }
-  return false;
-}
-
-function findMelds(hand: Tile[]): Tile[][] | null {
   const nonFei = hand.filter(t => !isFei(t));
   const feiCount = hand.filter(isFei).length;
 
-  // If hand has 0 or 1 non-fei tile, can't form melds
-  if (nonFei.length <= 2 && feiCount >= 3 - nonFei.length) {
-    // Can complete with fei tiles
-    return hand.length <= 3 ? [] : null; // If 3 or fewer tiles remain, they could be one meld of all fei/partial
-  }
-  if (hand.length === 0) return [];
-  if (hand.length < 3) return null;
-
-  // Try to find a sequence
-  const seq = findSequence(hand);
-  if (seq) {
-    const remaining = removeTiles(hand, seq);
-    const rest = findMelds(remaining);
-    if (rest !== null) return [seq, ...rest];
+  // All fei: consume 3 per meld
+  if (nonFei.length === 0) {
+    if (feiCount >= 3) {
+      const rest = findMelds(hand.slice(3), count - 1);
+      if (rest !== null) return [hand.slice(0, 3), ...rest];
+    }
+    return null;
   }
 
-  // Try to find a pung (fei cannot be used in pung)
-  for (let i = 0; i < nonFei.length; i++) {
-    for (let j = i + 1; j < nonFei.length; j++) {
-      for (let k = j + 1; k < nonFei.length; k++) {
-        if (tileEqual(nonFei[i], nonFei[j], false) && tileEqual(nonFei[j], nonFei[k], false)) {
-          const pung = [nonFei[i], nonFei[j], nonFei[k]];
-          const remaining = removeTiles(hand, pung);
-          const rest = findMelds(remaining);
-          if (rest !== null) return [pung, ...rest];
-        }
+  const first = hand.find(t => !isFei(t))!;
+
+  // ── Sequence (suit tiles only, with 0-3 fei subs) ──
+  if (first.category === 'suit') {
+    const suit = first.suit;
+    const v = first.value;
+    // Try each 3-tile sequence that includes v
+    for (let s = Math.max(1, v - 2); s <= Math.min(7, v); s++) {
+      const needed = [s, s + 1, s + 2];
+      // Try ALL ways to build this sequence (backtracking through non-fei/fei assignments)
+      const seqs = collectAllSequences(hand, suit, needed);
+      for (const seq of seqs) {
+        const remaining = removeTiles(hand, seq);
+        const rest = findMelds(remaining, count - 1);
+        if (rest !== null) return [seq, ...rest];
       }
     }
   }
 
+  // ── Pung (3 identical non-fei tiles) ──
+  const identical = nonFei.filter(t => tileEqual(t, first));
+  if (identical.length >= 3) {
+    const pung = identical.slice(0, 3);
+    const remaining = removeTiles(hand, pung);
+    const rest = findMelds(remaining, count - 1);
+    if (rest !== null) return [pung, ...rest];
+  }
+
+  return null;
+}
+
+// Collect ALL possible 3-tile sequences for a given (suit, neededValues) pair.
+// Exhaustively tries non-fei then fei at each position (backtracking).
+function collectAllSequences(hand: Tile[], suit: string, needed: number[]): Tile[][] {
+  const results: Tile[][] = [];
+  collectSeqRecur([...hand], suit, needed, 0, [], results);
+  return results;
+}
+
+function collectSeqRecur(
+  remaining: Tile[], suit: string, needed: number[],
+  i: number, meld: Tile[], results: Tile[][]
+): void {
+  if (i === needed.length) {
+    if (meld.length === 3) results.push([...meld]);
+    return;
+  }
+
+  const val = needed[i];
+
+  // Try non-fei tile matching this value
+  const nfIdx = remaining.findIndex(t =>
+    !isFei(t) && t.category === 'suit' && t.suit === suit && t.value === val
+  );
+  if (nfIdx >= 0) {
+    const t = remaining.splice(nfIdx, 1)[0];
+    collectSeqRecur(remaining, suit, needed, i + 1, [...meld, t], results);
+    remaining.splice(nfIdx, 0, t); // backtrack
+  }
+
+  // Try fei tile as this value
+  const feiIdx = remaining.findIndex(isFei);
+  if (feiIdx >= 0) {
+    const t = remaining.splice(feiIdx, 1)[0];
+    collectSeqRecur(remaining, suit, needed, i + 1, [...meld, t], results);
+    remaining.splice(feiIdx, 0, t); // backtrack
+  }
+}
+
+// Find a valid pair by trying ALL pair combinations and checking if
+// the remaining tiles can form the correct number of melds.
+function hasPair(hand: Tile[]): Tile[] | null {
+  for (let i = 0; i < hand.length; i++) {
+    for (let j = i + 1; j < hand.length; j++) {
+      const feiInPair = [hand[i], hand[j]].filter(isFei).length;
+      if (feiInPair > 1) continue; // fei+fei cannot be a pair
+      if (tileEqual(hand[i], hand[j]) || feiInPair === 1) {
+        const pair = [hand[i], hand[j]];
+        const remaining = removeTiles(hand, pair);
+        // remaining tiles must form 4 melds: remaining.length / 3 = 4
+        const meldList = findMelds(remaining, 4);
+        if (meldList !== null) return pair;
+      }
+    }
+  }
   return null;
 }
 
 export function checkWin(hand: Tile[], melds: Meld[]): boolean {
-  // Filter out bonus tiles (flowers, seasons, animals) — they don't count in hand
+  // Filter out bonus tiles — they don't count in hand
   const playableHand = hand.filter(t => t.category !== 'bonus');
 
-  // Total tiles should be at least 14 (13 + winning tile)
-  // 4 melds + 1 pair
-  // Each meld has 3 tiles (or 4 for kong)
-  const meldCount = melds.reduce((sum, m) => sum + (m.type === 'kong' ? 1 : 0) + (m.type === 'concealed-kong' ? 1 : 0) + (m.type === 'pung' ? 1 : 0) + (m.type === 'chi' ? 1 : 0), 0);
-  const meldTiles = melds.reduce((sum, m) => sum + m.tiles.length, 0);
+  // Count exposed melds
+  let meldCount = 0;
+  let meldTiles = 0;
+  for (const m of melds) {
+    if (m.type === 'chi' || m.type === 'pung') { meldCount++; meldTiles += 3; }
+    else if (m.type === 'kong' || m.type === 'concealed-kong') { meldCount++; meldTiles += 4; }
+  }
 
-  // Standard hand: 4 melds + 1 pair = 14 tiles (excluding bonus)
   if (playableHand.length + meldTiles < 14) return false;
   if (meldCount > 4) return false;
 
-  const remainingForHand = meldCount === 0 ? playableHand : playableHand;
   const remainingMeldCount = 4 - meldCount;
 
-  // Try to find melds in the hand
-  const remaining = remainingForHand;
-  if (remaining.length % 3 !== 2) return false;
+  // Try every possible pair, then check if remaining tiles form all melds
+  for (let i = 0; i < playableHand.length; i++) {
+    for (let j = i + 1; j < playableHand.length; j++) {
+      const pair = [playableHand[i], playableHand[j]];
+      const feiInPair = pair.filter(isFei).length;
+      if (feiInPair > 1) continue; // fei+fei is not a valid pair
+      if (tileEqual(playableHand[i], playableHand[j]) || feiInPair === 1) {
+        const remaining = removeTiles(playableHand, pair);
+        const meldList = findMelds(remaining, remainingMeldCount);
+        if (meldList !== null) return true;
+      }
+    }
+  }
 
-  const pair = hasPair(remaining);
-  if (!pair) return false;
-  const afterPair = removeTiles(remaining, pair);
-  const meldList = findMelds(afterPair);
-
-  if (meldList === null) return false;
-  return meldList.length === remainingMeldCount;
+  return false;
 }
+
 
 // ── Chou Ping Hu (臭平胡) Detection ──────────────────────
 
@@ -193,10 +201,9 @@ function isChouPingHu(hand: Tile[], melds: Meld[], state: GameState, playerId: n
 
   // Remove the pair and find remaining melds
   const remaining = removeTiles(playableHand, pair);
-  const meldList = findMelds(remaining);
-  if (!meldList) return false;
-
   const expectedMeldCount = 4 - melds.length;
+  const meldList = findMelds(remaining, expectedMeldCount);
+  if (!meldList) return false;
   if (meldList.length !== expectedMeldCount) return false;
 
   // Check if ANY tile in the sequences could be a valid winning tile for Chou Ping Hu
@@ -266,10 +273,9 @@ function isPingHu(hand: Tile[], melds: Meld[], state: GameState, playerId: numbe
 
   // Remove the pair and find remaining melds
   const remaining = removeTiles(playableHand, pair);
-  const meldList = findMelds(remaining);
-  if (!meldList) return false;
-
   const expectedMeldCount = 4 - melds.length;
+  const meldList = findMelds(remaining, expectedMeldCount);
+  if (!meldList) return false;
   if (meldList.length !== expectedMeldCount) return false;
 
   // Check if ANY tile in the sequences could be a valid winning tile for Ping Hu
@@ -336,10 +342,9 @@ function isPongPongHu(hand: Tile[], melds: Meld[], winningTile?: Tile): boolean 
 
   // Remove pair and find remaining melds
   const remaining = removeTiles(playableHand, pair);
-  const meldList = findMelds(remaining);
-  if (!meldList) return false;
-
   const expectedMeldCount = 4 - melds.length;
+  const meldList = findMelds(remaining, expectedMeldCount);
+  if (!meldList) return false;
   if (meldList.length !== expectedMeldCount) return false;
 
   // All remaining melds must be pungs (3 identical tiles), not sequences
@@ -372,7 +377,7 @@ function isKangKangHu(hand: Tile[], melds: Meld[], selfDraw: boolean): boolean {
 
   // Remove pair and find melds — all must be pungs (not sequences)
   const remaining = removeTiles(playableHand, pair);
-  const meldList = findMelds(remaining);
+  const meldList = findMelds(remaining, 4);
   if (!meldList || meldList.length !== 4) return false;
 
   for (const meld of meldList) {
@@ -406,10 +411,9 @@ function isPureHonours(hand: Tile[], melds: Meld[], winningTile?: Tile): boolean
 
   // Remove pair, find remaining melds — all must be pungs
   const remaining = removeTiles(playableHand, pair);
-  const meldList = findMelds(remaining);
-  if (!meldList) return false;
-
   const expected = 4 - melds.length;
+  const meldList = findMelds(remaining, expected);
+  if (!meldList) return false;
   if (meldList.length !== expected) return false;
 
   for (const meld of meldList) {
@@ -836,6 +840,23 @@ export function canKong(hand: Tile[], discard: Tile): boolean {
      false)
   );
   return matching.length >= 3;
+}
+
+export function canUpgradePungToKong(hand: Tile[], melds: Meld[]): { meldIndex: number; handTileIndex: number } | null {
+  // Check if any exposed pung meld matches a tile in hand
+  for (let mi = 0; mi < melds.length; mi++) {
+    const meld = melds[mi];
+    if (meld.type !== 'pung') continue;
+    const pungTile = meld.tiles[0];
+    const handIdx = hand.findIndex(t =>
+      t.category === pungTile.category &&
+      (pungTile.category === 'suit' ? (t as any).suit === (pungTile as any).suit && (t as any).value === (pungTile as any).value :
+       pungTile.category === 'honor' ? (t as any).type === (pungTile as any).type :
+       false)
+    );
+    if (handIdx >= 0) return { meldIndex: mi, handTileIndex: handIdx };
+  }
+  return null;
 }
 
 export function canSelfKong(hand: Tile[]): number | null {

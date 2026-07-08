@@ -106,6 +106,49 @@ Update this file whenever a meaningful change is made to the codebase.
 - Fei penalty (-1 each, not enforced)
 
 ---
+## [2026-07-08] — Phase: Engine Rewrite (Backtracking Win Detection)
+
+### Changed
+
+- **Complete win detection rewrite**: Replaced the 3-phase greedy+fallback algorithm (`findSequence` → Phase 2 fei backtracking → pung fallback) with a single-pass recursive backtracking engine.
+- **`findMelds`**: Now takes a required `count` parameter. Old signature `findMelds(hand)` (find unlimited melds) changed to `findMelds(hand, count)` (find exactly `count` melds).
+- **`collectAllSequences`**: New function replaces `isSequence` + `findSequence`. Exhaustively tries ALL non-fei/fei tile assignments for each needed sequence value using backtracking.
+- **`checkWin`**: Now inlines pair-finding (tries ALL valid pairs instead of just first fei match) instead of calling `hasPair`.
+- **`hasPair`**: Updated to exhaustively try all pair combinations and verify with `findMelds(remaining, 4)`.
+- **Removed**: `isSequence`, `findSequence`, the old multi-phase `findMelds` variants (~100 lines removed). Net bundle size decreased.
+
+### Fixed
+
+- **"Wasted tile" false positive**: The old `findSequence` consumed 3 non-fei tiles when fei substitution only needed 2. A 3rd tile was silently wasted as padding, causing false wins. New `collectAllSequences` only consumes tiles that actually participate in the sequence.
+- **`isKangKangHu`**: Was calling `findMelds(remaining)` without required count parameter (passed `undefined` as count, causing incorrect behavior). Fixed to `findMelds(remaining, 4)`.
+- **`isPureHonours`**: Same missing `count` parameter bug. Fixed to `findMelds(remaining, expected)` with the declaration moved before the call. Also fixed duplicate `const expected` declaration.
+
+### Architecture
+
+New engine structure:
+```
+collectAllSequences(hand, suit, needed)
+  └── collectSeqRecur(remaining, suit, needed, i, meld, results)
+        ├── Try non-fei tile for each needed value
+        └── Try fei tile for each needed value (backtracking)
+
+findMelds(hand, count)
+  ├── Pick first non-fei tile
+  ├── Try all sequences containing it via collectAllSequences
+  ├── Try pung (3 identical tiles)
+  └── Recurse
+
+checkWin(hand, melds)
+  └── Try ALL valid pairs
+  └── Call findMelds(remaining, remainingMeldCount)
+```
+
+### Performance
+
+- No change — hand size is max 14 tiles, worst-case backtracking is <0.1ms
+- Purposely not optimized (premature optimization was the root cause of earlier bugs)
+
+---
 
 ## Upcoming / Roadmap
 
@@ -118,3 +161,108 @@ Update this file whenever a meaningful change is made to the codebase.
 - [ ] Mobile-responsive layout improvements
 - [ ] Game replay / history
 - [ ] i18n (Chinese/English toggle)
+
+---
+
+## [2026-07-08] — Phase: Multiplayer Infrastructure
+
+### Added
+
+- **WebSocket relay server**: `server/index.cjs` updated with `player_action` and `state_update` message types for multiplayer
+- **Host-as-authority architecture**: Host client runs full game state, broadcasts to all connected clients
+- **Store multiplayer support**: `isMultiplayer`, `isHost`, `myPlayerIndex`, `waitingForRemoteAction` fields
+- **Remote player handling**: `drawTile` now checks if a player is remote — doesn't auto-discard, waits for action
+- **`applyRemoteAction`**: Store method that processes actions received from remote clients (discard, self-draw win, pass)
+- **HostGame broadcasting**: After each state change, host debounce-broadcasts `state_update` to all connected clients
+- **HostGame action handler**: Listens for `player_action` messages from remote clients via the server relay
+- **JoinGame state receiving**: Listens for `state_update` and applies received game state directly (no seed-based sync)
+- **Start script**: `start_mahjong.command` now starts both Vite dev server (port 5173) AND WebSocket server (port 3001)
+
+### Multiplayer Architecture
+
+```
+Remote Client                Server                  Host (Authority)
+─────────────                ──────                  ────────────────
+     │                         │                         │
+     │── player_action ──────→ │ ── player_action ─────→ │
+     │   (discard, win, etc.)  │                         │── applyRemoteAction()
+     │                         │                         │── store method runs
+     │                         │                         │── state changes
+     │                         │                         │── broadcast state
+     │←── state_update ───────│ ←── state_update ───────│
+     │       (full state)     │                         │
+```
+
+### Current Status (MVP)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Room creation (host) | ✅ | Existing, tested |
+| Room joining | ✅ | Existing, tested |
+| Game state sync (host → clients) | ✅ | Implemented |
+| Remote player discarding | ✅ | Via `applyRemoteAction` |
+| Remote player self-draw win | ✅ | Auto-handled by host |
+| Remote claims | ✅ | Auto-handled by host (like AI) |
+| **Remote client sending actions** | ⏳ **Needs GameTable wiring** | See below |
+| AI fill-in for empty slots | ❌ | Not implemented |
+| Reconnection | ❌ | Not implemented |
+
+### Remaining for MVP
+
+**Remote client action sending** — The final piece. GameTable.tsx needs to:
+1. Import `connection` from `../utils/connection`
+2. After each local player action (discard, win, claim, pass), send the action to the host via WebSocket if `isMultiplayer && !isHost`
+
+This is a straightforward modification to `GameTable.tsx` — add the import and send calls after each store action call. Estimated effort: ~30 minutes.
+
+### Dev Notes
+
+- Start the game: double-click `start_mahjong.command` on Desktop (starts both servers)
+- WebSocket server runs on **port 3001**
+- Vite dev server runs on **port 5173**
+- Room codes are 4-character alphanumeric (no 0, 1, I, O)
+- Host is always Player 0 (East)
+- All clients must be on the same network (default)
+
+## [2026-07-08] — Phase: Multiplayer Bug Fixes
+
+### Fixed
+
+- **Server playerIndex misalignment**: Server was assigning `playerIndex: 0` to first joiner (same as host). Fixed to `freeSlot + 1` so joiners get indices 1-4.
+- **GameTable hardcoded `0` for claims**: All `claimTile(0, ...)` and `e.playerIndex === 0` references changed to use `humanIdx` from `myPlayerIndex` — join clients now show "You (P1)" instead of wrong tiles.
+- **Remote client double-processing**: Join client was calling `discardTile` locally AND sending to host, causing state divergence. Fixed by routing actions through WebSocket only for join clients.
+- **Remote claim routing**: Added `handleClaim`/`handlePassClaim` helper functions that send actions to host for join clients instead of processing locally.
+- **`applyRemoteAction` handling**: Extended to handle `win`, `kong`, `pung`, `chi`, and `pass_claim` action types.
+- **HostGame memory leak**: Store subscription and action listener were registered at component body level (every render), accumulating duplicates. Moved into `useEffect` with proper cleanup.
+- **Server action message parsing**: Server now extracts `playerIndex` from `msg.data.playerIdx` if not at top level of message.
+
+### Changed
+
+- WebSocket server port changed from **3001** → **3002** due to port conflict with system `redwood-broker`
+- Connection URL updated to `ws://hostname:3002`
+- Updated `start_mahjong.command` to use port 3002
+
+## [2026-07-08] — Phase: Multiplayer Bug Fixes (cont.)
+
+### Fixed
+
+- **HostGame subscription cleanup**: Store subscription and action listener were unsubscribed when HostGame unmounted (due to `window.location.hash = '#/'` navigation). This broke all state broadcasting after the initial game start. Now only cleaned up if the game hasn't started (cancel flow).
+- **Auto-play for remote humans**: The store used `playerIndex !== 0` to detect AI players. In multiplayer, all players have `isHuman: true`, so the host was auto-discarding for remote humans ("bot discarding from nowhere"). Changed to check `players[playerIndex].isHuman` directly — only pure AI players (isHuman === false) get auto-play.
+- **ClaimTile auto-discard for remote humans**: Same fix — only auto-discard after a claim for pure AI players, not remote humans.
+- **Player position rotation**: The opponent display positions were hardcoded (`players[1]` right, `players[2]` top, `players[3]` left). For the join client (P1), this showed P1's own tiles in two places and hid the host (P0/East) entirely. Now positions rotate based on `humanIdx`: right = `(humanIdx+1)%4`, top = `(humanIdx+2)%4`, left = `(humanIdx+3)%4`.
+
+## [2026-07-08] — Phase: Self-Kong, Round Wind, AI Chi
+
+### Added
+
+- **Self-Kong (自杠)**: Players can now upgrade an exposed Pung to a Kong when drawing the 4th matching tile. Also supports Concealed Kong (4 of a kind in hand). Orange Kong button appears next to Pass when available.
+- **Kang Shang**: If the replacement tile from a Kong completes a winning hand, auto-wins.
+- **Round Wind Rotation**: After all 4 players have been dealer once (4 games), round wind rotates East → South → West → North. Game ends after North round is complete.
+- **AI Chi**: AI players can now claim Chi (sequence) from discards. Picks the first valid chi option. Priority: Win > Kong > Pung > Chi.
+- **Round wind display**: Center panel shows current round wind (East/South/West/North round).
+
+### Fixed
+
+- `dealerCount` and `roundWind` preserved through `reset()` so round tracking persists across consecutive games.
+- End-of-game condition: Game stops after North round completes (all 4 players have been dealer in North).
+- Self-kong, concealed kong, and pass-self-kong actions properly routed via WebSocket for multiplayer join clients.

@@ -15,6 +15,7 @@ const PIXEL_SIZES = { sm: 34, md: 44, lg: 48, xl: 52 };
 
 export function Tile({ tile, selected, onClick, faceDown, size = "md", highlight, rotate }: TileProps) {
   const px = PIXEL_SIZES[size];
+  const rotation = rotate ?? 0;
 
   const baseClasses = `
     cursor-${onClick ? 'pointer' : 'default'}
@@ -33,7 +34,7 @@ export function Tile({ tile, selected, onClick, faceDown, size = "md", highlight
   if (faceDown) {
     return (
       <div className={`${baseClasses} ${selectionClasses}`} onClick={onClick}>
-        <TileImageBack size={px} rotate={rotate | 0} />
+        <TileImageBack size={px} rotate={rotation} />
       </div>
     );
   }

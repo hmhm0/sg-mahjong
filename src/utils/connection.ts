@@ -6,17 +6,29 @@ class GameConnection {
   private _connected = false;
   private _playerIndex = -1;
   private _roomCode = '';
+  private _serverUrl = '';
+  private _reconnectAttempts = 0;
+  private _maxReconnectAttempts = 3;
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   get connected() { return this._connected; }
   get playerIndex() { return this._playerIndex; }
   get roomCode() { return this._roomCode; }
 
   connect(url: string): Promise<void> {
+    this._serverUrl = url;
+    this._reconnectAttempts = 0;
+    return this._doConnect();
+  }
+
+  private _doConnect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(url);
+      this.ws = new WebSocket(this._serverUrl);
 
       this.ws.onopen = () => {
         this._connected = true;
+        this._reconnectAttempts = 0;
+        this.dispatch({ type: 'connected' });
         resolve();
       };
 
@@ -32,12 +44,24 @@ class GameConnection {
       this.ws.onclose = () => {
         this._connected = false;
         this.dispatch({ type: 'disconnected' });
+        // Auto-reconnect with backoff
+        if (this._roomCode && this._reconnectAttempts < this._maxReconnectAttempts) {
+          this._reconnectAttempts++;
+          this._reconnectTimer = setTimeout(() => {
+            this._doConnect();
+          }, 2000 * this._reconnectAttempts);
+        }
       };
 
       this.ws.onerror = (err) => {
-        reject(err);
+        if (this._reconnectAttempts === 0) reject(err);
       };
     });
+  }
+  
+  cancelReconnect() {
+    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+    this._reconnectAttempts = this._maxReconnectAttempts;
   }
 
   send(msg: any) {
@@ -72,6 +96,11 @@ class GameConnection {
   }
 
   disconnect() {
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+      this.ws = null;
+      this._connected = false;
+      return;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -84,4 +113,4 @@ class GameConnection {
 }
 
 export const connection = new GameConnection();
-export const SERVER_URL = `ws://${window.location.hostname}:3001`;
+export const SERVER_URL = `ws://${window.location.hostname}:3002`;

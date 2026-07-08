@@ -66,6 +66,14 @@ export interface GameState {
   winner: number | null;
   winningTiles: Tile[];
   discardHistory: Tile[];
+  moveHistory: string[];
+  hostDisconnected: boolean;
+  playerLeft: { playerIndex: number; playerName: string } | null;
+  diceResults: {
+    dice: [number, number, number][];
+    totals: number[];
+    eastPlayerIdx: number;
+  } | null;
 }
 
 export type Direction = 'player' | 'left' | 'across' | 'right';

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { buildDeck, seededShuffle, sortHand } from '../game/tiles';
 import { connection, SERVER_URL } from '../utils/connection';
+import { generateDiceResults, MultiplayerDiceOverlay } from '../components/MultiplayerDiceOverlay';
+const AI_BOT_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
 
 export function JoinGame() {
   const [code, setCode] = useState('');
@@ -9,7 +11,19 @@ export function JoinGame() {
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
   const [joined, setJoined] = useState(false);
+  const [playerName, setPlayerName] = useState('');
+  const [players, setPlayers] = useState<string[]>(['', 'Sakura', 'Mei Lin', 'Kenji']);
+  const [readyState, setReadyState] = useState<boolean[]>([false, false, false, false]);
+  const [isReady, setIsReady] = useState(false);
+  const [diceData, setDiceData] = useState<{
+    dice: [number, number, number][];
+    totals: number[];
+    eastPlayerIdx: number;
+    playerCount: number;
+  } | null>(null);
+  const diceDataRef = useRef<typeof diceData>(null);
   const startedRef = useRef(false);
+  const stateUpdateArrivedRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -38,7 +52,11 @@ export function JoinGame() {
 
       connection.on('room_joined', (msg) => {
         connection.setRoomInfo(msg.code, msg.playerIndex);
-        setStatus('Joined! Waiting for the host to start the game...');
+        const defaultName = `Player ${msg.playerIndex + 1}`;
+        const finalName = playerName.trim() || defaultName;
+        connection.send({ type: 'player_name', playerIndex: msg.playerIndex, name: finalName });
+        setPlayerName(finalName);
+        setStatus('Set your name below, toggle Ready, and wait.');
         setJoined(true);
       });
 
@@ -48,69 +66,84 @@ export function JoinGame() {
         connection.disconnect();
       });
 
-      connection.on('player_joined', () => {
-        // Ignore other players joining, we already joined
+      connection.on('room_closed', () => {
+        startedRef.current = true;
+        useGameStore.setState({ hostDisconnected: true });
+      });
+
+      connection.on('player_joined', (msg) => {
+        const slotIdx = msg.playerIndex;
+        if (slotIdx >= 1 && slotIdx <= 3) {
+          setPlayers(prev => {
+            const next = [...prev];
+            if (!next[slotIdx]) next[slotIdx] = `Player ${slotIdx + 1}`;
+            return next;
+          });
+        }
+      });
+
+      connection.on('player_left', (msg) => {
+        const slotIdx = msg.playerIndex;
+        if (slotIdx >= 0 && slotIdx <= 3) {
+          setPlayers(prev => {
+            const next = [...prev];
+            next[slotIdx] = slotIdx > 0 ? AI_BOT_NAMES[slotIdx - 1] : '';
+            return next;
+          });
+        }
+      });
+
+      connection.on('player_name', (msg) => {
+        const slotIdx = msg.playerIndex;
+        if (slotIdx >= 0 && slotIdx <= 3) {
+          setPlayers(prev => {
+            const next = [...prev];
+            next[slotIdx] = msg.name;
+            return next;
+          });
+        }
       });
 
       connection.on('game_started', (msg) => {
         startedRef.current = true;
-
-        // Generate deterministic game from seed
-        const deck = buildDeck(msg.config);
-        const shuffled = seededShuffle(deck, msg.seed);
-
-        const playerCount = msg.playerCount;
-        const myIndex = connection.playerIndex;
-        const playerData: any[] = [];
-
-        for (let p = 0; p < playerCount; p++) {
-          playerData.push({
-            id: p,
-            name: p === myIndex ? 'You' : `Player ${p + 1}`,
-            isHuman: p === myIndex,
-            hand: [] as any[],
-            melds: [],
-            discards: [],
-            seatWind: (['east', 'south', 'west', 'north'] as const)[p],
-            isAlive: true,
-          });
-        }
-
-        // Deal: same logic as startGame in store
-        let wallIdx = 0;
-        for (let round = 0; round < 3; round++) {
-          for (let p = 0; p < playerCount; p++) {
-            for (let i = 0; i < 4; i++) {
-              playerData[p].hand.push(shuffled[wallIdx++]);
-            }
-          }
-        }
-        for (let p = 0; p < playerCount; p++) {
-          playerData[p].hand.push(shuffled[wallIdx++]);
-        }
-        playerData[myIndex].hand.push(shuffled[wallIdx++]);
-
-        const remainingWall = shuffled.slice(wallIdx);
-
-        useGameStore.setState({
-          players: playerData,
-          wall: remainingWall,
-          deadWall: [],
-          currentPlayerIndex: 0,
-          phase: 'playing',
-          roundWind: 'east',
-          config: msg.config,
-          lastAction: 'Game started!',
-          winner: null,
-          winningTiles: [],
-          showConfig: false,
-          message: myIndex === 0 ? 'Your turn!' : 'Waiting...',
-        });
-
-        window.location.hash = '#/';
       });
 
-    } catch (e) {
+      connection.on('player_ready', (msg) => {
+        if (msg.playerIndex >= 0 && msg.playerIndex < 4) {
+          setReadyState(prev => {
+            const next = [...prev];
+            next[msg.playerIndex] = msg.ready;
+            return next;
+          });
+        }
+      });
+
+      connection.on('state_update', (msg) => {
+        startedRef.current = true;
+        stateUpdateArrivedRef.current = true;
+        const state = msg.state;
+        state.isMultiplayer = true;
+        state.isHost = false;
+        state.myPlayerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
+        useGameStore.setState(state);
+        // Navigate only if no dice overlay is showing
+        if (!diceDataRef.current) {
+          window.location.hash = '#/';
+        }
+      });
+
+      connection.on('dice_results', (msg: any) => {
+        const results = {
+          dice: msg.dice as [number, number, number][],
+          totals: msg.totals as number[],
+          eastPlayerIdx: msg.eastPlayerIdx as number,
+          playerCount: msg.playerCount as number,
+        };
+        diceDataRef.current = results;
+        setDiceData(results);
+      });
+
+     } catch (e) {
       setError('Could not connect to game server. Make sure the server is running.');
       setStatus('Connection failed.');
     }
@@ -123,6 +156,7 @@ export function JoinGame() {
   };
 
   return (
+    <>
     <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 flex flex-col items-center justify-center p-4">
       <div className="bg-green-800/60 backdrop-blur rounded-2xl p-8 w-full max-w-md border border-green-700/50 text-center">
         <h1 className="text-2xl font-bold text-yellow-300 mb-6">Join Game</h1>
@@ -135,7 +169,13 @@ export function JoinGame() {
 
         {!joined ? (
           <>
-            <p className="text-green-300 text-sm mb-3">Enter the 4-character room code:</p>
+            <div className="mb-4">
+              <label className="text-green-300 text-xs mb-1 block">Your Name:</label>
+              <input type="text" maxLength={15} value={playerName} onChange={(e) => setPlayerName(e.target.value)}
+                placeholder="Enter your name" autoComplete="off"
+                className="w-full bg-green-900/50 border border-green-600 rounded-lg px-3 py-2 text-green-200 text-sm outline-none focus:border-yellow-500" />
+            </div>
+            <p className="text-green-300 text-sm mb-3">Room Code:</p>
             <input
               type="text"
               maxLength={4}
@@ -163,14 +203,63 @@ export function JoinGame() {
           </>
         ) : (
           <>
-            <p className="text-green-300 text-lg mb-2">Joined!</p>
-            <p className="text-green-400 text-sm mb-4">{status}</p>
-            <div className="flex justify-center">
-              <div className="animate-spin w-8 h-8 border-4 border-yellow-500 border-t-transparent rounded-full" />
+            <p className="text-green-300 text-sm mb-3">Players in room:</p>
+            <div className="space-y-1 mb-4">
+              {players.map((name, i) => {
+                const isMe = i === (connection.playerIndex >= 0 ? connection.playerIndex : 0);
+                const isHost = i === 0;
+                const isBot = i > 0 && AI_BOT_NAMES.includes(name);
+                const isEmpty = !name && !isBot;
+                const rdy = readyState[i];
+                return (
+                  <div key={i} className={`rounded-lg py-2 px-4 text-sm flex items-center gap-2 ${isEmpty ? 'bg-gray-700/30 text-gray-500 border border-dashed border-gray-600/30' : isBot ? 'bg-gray-700/40 text-gray-400 border border-dashed border-gray-600/40' : isMe ? 'bg-green-700/40 text-green-200' : 'bg-green-700/30 text-green-300'}`}>
+                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${isEmpty || isBot ? 'bg-gray-600 text-gray-400' : rdy ? 'bg-green-500 text-white' : 'bg-green-600 text-white'}`}>{i + 1}</span>
+                    {isEmpty ? 'Waiting...' : name}
+                    {isMe && <span className="text-yellow-300 text-xs ml-1">(You)</span>}
+                    {isHost && !isMe && <span className="text-yellow-300 text-xs ml-1">(Host)</span>}
+                    {rdy && !isBot && <span className="text-green-400 text-xs ml-auto">✓ Ready</span>}
+                    {!rdy && !isBot && !isEmpty && <span className="text-yellow-400 text-xs ml-auto">Not Ready</span>}
+                    {isBot && <span className="text-gray-500 text-xs ml-auto">(Bot)</span>}
+                  </div>
+                );
+              })}
             </div>
+            <button
+              onClick={() => {
+                const newReady = !isReady;
+                setIsReady(newReady);
+                connection.send({ type: 'player_ready', playerIndex: connection.playerIndex, ready: newReady });
+              }}
+              className={`w-full py-2 rounded-lg font-bold text-sm mb-2 transition-all ${
+                isReady ? 'bg-green-600 hover:bg-green-500 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+              }`}
+            >
+              {isReady ? '✓ Ready' : 'Not Ready'}
+            </button>
+            <button onClick={handleCancel}
+              className="w-full py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">
+              Cancel
+            </button>
           </>
         )}
       </div>
     </div>
+    {diceData && (
+      <MultiplayerDiceOverlay
+        dice={diceData.dice}
+        totals={diceData.totals}
+        eastPlayerIdx={diceData.eastPlayerIdx}
+        myPlayerIndex={connection.playerIndex >= 0 ? connection.playerIndex : 0}
+        playerCount={diceData.playerCount}
+        onComplete={() => {
+          diceDataRef.current = null;
+          setDiceData(null);
+          if (stateUpdateArrivedRef.current) {
+            window.location.hash = '#/';
+          }
+        }}
+      />
+    )}
+    </>
   );
 }

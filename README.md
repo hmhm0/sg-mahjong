@@ -1,6 +1,6 @@
 # 🀄 Singapore Mahjong
 
-A single-player web-based **Singapore Mahjong** game featuring 3 AI opponents. Built with React, TypeScript, Vite, and Zustand.
+A full-featured **Singapore Mahjong** game with single-player (vs 3 AI) and multiplayer (WebSocket) modes. Built with React, TypeScript, Vite, and Zustand.
 
 > **⚠️ Disclaimer:** This project is created **for entertainment and educational purposes only**. It is **not intended for gambling or real-money play**. All mahjong tile images are sourced from publicly available assets and are not owned by the author.
 
@@ -8,14 +8,19 @@ A single-player web-based **Singapore Mahjong** game featuring 3 AI opponents. B
 
 ## ✨ Features
 
-- **Single-player** — you vs 3 AI opponents
+- **Single-player** — you vs 3 AI opponents with smart discard and claim AI
+- **Multiplayer** — Host a game room, share the 4-character room code, others join via WebSocket
 - **Full Singapore Mahjong rules** — including Fei (jokers), bonus tiles, dealer rotation
-- **Comprehensive tai system** — 20+ scoring patterns including Ping Hu, Pong Pong Hu, Thirteen Wonders, and more
+- **Comprehensive tai system** — 25+ scoring patterns including Ping Hu, Pong Pong Hu, Thirteen Wonders, pure honour hands, and limit hands
 - **Smart AI** — scoring-based discard selection, claim priority with delays
 - **Configurable** — tai threshold, Fei count, unlimited tai mode
 - **Responsive tile display** — player tiles face-up, opponent tiles face-down with rotation
 - **Rules reference** — in-game rules page covering all scoring patterns
-- **Spécial hands** — Tian Hu, Di Hu, Men Hu, Thirteen Wonders, Qiang Kang, and other limit hands
+- **Special hands** — Tian Hu, Di Hu, Men Hu, Thirteen Wonders, Qiang Kang, Da San Yuan, Da Xi Si, Shi Ba Luo Han
+- **Self-Kong** & **Kang Shang** — upgrade pungs, concealed kongs, auto-win on kong replacement
+- **Round wind rotation** — East → South → West → North, game ends after North
+- **AFK warning** — detects player inactivity (>5 min), displays warning to all
+- **Move history** — scrollable popup tracking every action per round
 
 ## 🖼️ Screenshots
 
@@ -27,12 +32,12 @@ A single-player web-based **Singapore Mahjong** game featuring 3 AI opponents. B
 
 | Layer | Choice |
 |---|---|
-| Framework | React 18 + TypeScript |
+| Framework | React 18 + TypeScript + React Router |
 | Build | Vite 5 |
 | State | Zustand 4 |
+| Server | Node.js + ws (WebSocket relay for multiplayer) |
 | Styling | Tailwind CSS 3 |
 | Tiles | Custom SVGs |
-| Runtime | Node.js 18+ |
 
 ---
 
@@ -40,7 +45,7 @@ A single-player web-based **Singapore Mahjong** game featuring 3 AI opponents. B
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/singapore-mahjong.git
+git clone https://github.com/hmhm0/sg-mahjong.git
 cd singapore-mahjong
 
 # Install dependencies
@@ -57,10 +62,20 @@ npm run build
 
 ### macOS
 
-Double-click `start_mahjong.command` on your Desktop (created by the setup script) or run:
+Start both the web dev server and WebSocket relay server:
 
 ```bash
-./node_modules/.bin/vite --host
+./start_mahjong.command
+```
+
+Or manually:
+
+```bash
+# Terminal 1: WebSocket server
+node server/index.cjs
+
+# Terminal 2: Vite dev server
+npx vite
 ```
 
 ---
@@ -82,6 +97,7 @@ Double-click `start_mahjong.command` on your Desktop (created by the setup scrip
 | Win / Kong / Pung / Chi | Claim the last discarded tile |
 | Pass | Pass on claiming |
 | Quit Game | Return to home screen |
+| History | Open move history popup |
 
 ---
 
@@ -152,12 +168,22 @@ See the full rules reference in-game at `/#/rules`.
 │   ├── cat.svg, rat.svg, chicken.svg, millipede.svg
 │   ├── fei.svg               # Joker tile
 │   └── back.svg               # Face-down tile
-└── server/index.cjs           # WebSocket multiplayer relay (WIP)
+└── server/index.cjs           # WebSocket multiplayer relay
 ```
 
 ---
 
 ## 🧠 Architecture
+
+### Multiplayer Architecture
+
+```
+Remote Client                Server                  Host (Authority)
+```
+
+- **Host** runs the full authoritative game state
+- **Join clients** send actions to host, receive full state updates
+- **Server** relays messages between clients (pass-through, no game logic)
 
 ### Game Flow
 ```
@@ -169,9 +195,17 @@ Single Zustand store (`gameStore.ts`):
 - Game state: players, wall, discards, melds
 - Turn management: draw → check → discard → claim → next turn
 - AI auto-play with configurable delays (200ms–800ms)
+- Multiplayer fields: `isMultiplayer`, `isHost`, `myPlayerIndex`, `waitingForRemoteAction`
 
 ### Win Detection
-Recursive algorithm checking all possible meld combinations + pair, with Fei tile wildcard support for sequences.
+
+Single-pass recursive backtracking engine:
+
+1. **Try every valid pair** — two identical tiles or fei + any tile
+2. **`findMelds(hand, count)`** — finds exactly `count` melds from hand (first tile, all sequences, pung, recurse)
+3. **Returns true** if any pair + meld combination forms a valid hand
+
+The solver handles mixed sequence+pung hands and all fei substitution patterns correctly. No greedy phases or fallback steps.
 
 ---
 
@@ -189,7 +223,7 @@ See [UPDATE.md](./UPDATE.md) for the project changelog and current development s
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](./LICENSE) for details.
 
 ---
 
@@ -199,7 +233,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 This software is a **game of skill for entertainment purposes only**. It does not involve real-money wagering, gambling, or any form of financial transaction. No virtual currency, loot boxes, or microtransactions are present.
 
 ### Image Attribution
-The mahjong tile SVGs used in this project are sourced from publicly available standard mahjong tile sets. The author does not claim ownership of these images. If you are the copyright holder and believe these assets should not be used here, please open an issue to discuss removal or replacement.
+The mahjong tile SVGs used in this project are sourced from publicly available standard mahjong tile sets. The author does not claim ownership of these images. 
 
 ---
 

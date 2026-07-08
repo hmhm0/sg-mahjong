@@ -1,3 +1,17 @@
+import type { ReactNode } from 'react';
+
+function Section({ title, icon, children }: { title: string; icon: string; children: ReactNode }) {
+  return (
+    <section className="bg-green-800/35 border border-green-700/40 rounded-xl p-4">
+      <h2 className="text-lg font-bold text-yellow-300 mb-3 flex items-center gap-2">
+        <span>{icon}</span>
+        <span>{title}</span>
+      </h2>
+      <div className="text-green-200 text-sm space-y-2">{children}</div>
+    </section>
+  );
+}
+
 export function Rules() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 p-4">

@@ -1,8 +1,23 @@
 import { create } from 'zustand';
 import type { GameState, GameConfig, Tile, Meld, Player, Wind } from '../types/mahjong';
 import { buildDeck, shuffleDeck, sortHand, isFei, isBonus } from '../game/tiles';
-import { checkWin, calculateTai, canChi, canPung, canKong, canSelfKong, hasValidTai, isThirteenWonders } from '../game/rules';
+import { checkWin, calculateTai, canChi, canPung, canKong, canSelfKong, canUpgradePungToKong, hasValidTai, isThirteenWonders } from '../game/rules';
 import { chooseDiscard } from '../game/ai';
+
+// Helper: find next player clockwise by seat wind (not by index)
+function getNextPlayer(players: any[], currentIdx: number): number {
+  const order = ['east', 'south', 'west', 'north'];
+  const curWind = players[currentIdx]?.seatWind || 'east';
+  const nextWind = order[(order.indexOf(curWind) + 1) % 4];
+  return players.findIndex(p => p.seatWind === nextWind);
+}
+
+function findLastMatchingIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (predicate(items[i])) return i;
+  }
+  return -1;
+}
 
 const WIND_ORDER: Wind[] = ['east', 'south', 'west', 'north'];
 const AI_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
@@ -36,6 +51,17 @@ interface GameStore extends GameState {
  selfDrawWinAction: (playerIndex: number) => void;
   passSelfDrawWin: () => void;
   nextDealerPlayerId: number | null;
+  selfKongData: { meldIndex: number; handTileIndex: number; concealedKongTileIndex: number | null } | null;
+  selfKongAction: (playerIndex: number, meldIndex: number, handTileIndex: number) => void;
+  concealedKongAction: (playerIndex: number, tileIndex: number) => void;
+  passSelfKong: () => void;
+  dealerCount: number;
+  // Multiplayer
+  isMultiplayer: boolean;
+  isHost: boolean;
+  myPlayerIndex: number;
+  waitingForRemoteAction: boolean;
+  applyRemoteAction: (playerIndex: number, actionType: string, data: any) => void;
 }
 
 const INITIAL_STATE: GameState = {
@@ -50,12 +76,22 @@ const INITIAL_STATE: GameState = {
   winner: null,
   winningTiles: [],
   discardHistory: [],
+  moveHistory: [],
+  hostDisconnected: false,
+  playerLeft: null,
+  diceResults: null,
 };
 
 export const useGameStore = create<GameStore>((set, get) => ({
   ...INITIAL_STATE,
   showConfig: true,
   selfDrawWin: false,
+  selfKongData: null,
+  dealerCount: 0,
+  isMultiplayer: false,
+  isHost: false,
+  myPlayerIndex: 0,
+  waitingForRemoteAction: false,
  isHuaShang: false,
  isKangShang: false,
  isMenHu: false,
@@ -65,6 +101,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   message: 'Configure and start a new game!',
   setMessage: (msg) => set({ message: msg }),
   setShowConfig: (show) => set({ showConfig: show }),
+  setWaitingForClaim: (tile, fromPlayer) => set({ waitingForClaim: { tile, fromPlayer, eligiblePlayers: [] } }),
 
   startGame: (config: GameConfig, humanWind?: Wind) => {
     const deck = shuffleDeck(buildDeck(config));
@@ -74,9 +111,30 @@ export const useGameStore = create<GameStore>((set, get) => ({
     // Use stored next dealer if set (skip dice roll result)
     let effectiveHumanWind = humanWind;
     const state = get();
+    let dealerCount = state.dealerCount || 0;
+    let roundWind = state.roundWind || 'east';
     if (state.nextDealerPlayerId !== null) {
       const hIdx = (4 - state.nextDealerPlayerId) % 4;
       effectiveHumanWind = windOrder[hIdx];
+      // Dealer changed — increment counter
+      dealerCount++;
+      // After all 4 players have been dealer, rotate round wind
+     if (dealerCount >= 4) {
+        // End of North round — game is over
+        if (roundWind === 'north') {
+          set({
+            phase: 'finished',
+            message: 'Game Over! All rounds completed.',
+            nextDealerPlayerId: null,
+            selfKongData: null,
+          });
+          return;
+        }
+        // Rotate to next round wind
+        const windNames: Wind[] = ['east', 'south', 'west', 'north'];
+        roundWind = windNames[(windNames.indexOf(roundWind) + 1) % 4] as Wind;
+        dealerCount = 0;
+      }
     }
     const humanWindIdx = effectiveHumanWind ? windOrder.indexOf(effectiveHumanWind) : 0;
 
@@ -110,14 +168,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
 
     // Reveal bonus tiles (flowers, seasons, animals) and draw replacements
-    for (const p of players) {
+    // Clockwise order starting from East
+    const eastPlayerIdx = players.findIndex(p => p.seatWind === 'east');
+    for (let offset = 0; offset < 4; offset++) {
+      const p = players[(eastPlayerIdx + offset) % 4];
       while (true) {
         const bonusIdx = p.hand.findIndex(t => isBonus(t));
         if (bonusIdx === -1) break;
         const bonusTile = p.hand.splice(bonusIdx, 1)[0];
         if (!p.bonusTiles) p.bonusTiles = [];
         p.bonusTiles.push(bonusTile);
-        // Draw replacement from wall
+        // Draw replacement from wall (clockwise from East)
         if (wallIdx < deck.length) {
           p.hand.push(deck[wallIdx++]);
         }
@@ -133,6 +194,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const result = calculateTai(tempState, eastPlayerIndex, false, false, false, false, undefined, true);
       set({
         nextDealerPlayerId: null,
+  selfKongData: null,
+  dealerCount: 0,
+  isMultiplayer: false,
+  isHost: false,
+  myPlayerIndex: 0,
+  waitingForRemoteAction: false,
         players,
         wall: remainingWall,
         deadWall: [],
@@ -152,9 +219,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
      deadWall: [],
       currentPlayerIndex: eastPlayerIndex,
      phase: 'playing',
-     roundWind: 'east',
+     roundWind,
+     dealerCount,
      config,
-      lastAction: `Game started! Player ${eastPlayerIndex} (East) discards first.`,
+      lastAction: `Game started! ${players[eastPlayerIndex].name} (East) discards first.`,
      winner: null,
      winningTiles: [],
      showConfig: false,
@@ -207,7 +275,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
 
       if (qqyWinner !== null) {
-        const bonusIdx = newPlayers[playerIndex].hand.findLastIndex(t => t === drawnTile);
+        const bonusIdx = findLastMatchingIndex(newPlayers[playerIndex].hand, t => t === drawnTile);
         if (bonusIdx >= 0) {
           const bonusTile = newPlayers[playerIndex].hand.splice(bonusIdx, 1)[0];
           if (!newPlayers[qqyWinner].bonusTiles) newPlayers[qqyWinner].bonusTiles = [];
@@ -228,7 +296,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
 
       // Remove bonus tile from hand and add to bonusTiles display
-      const bonusIdx = newPlayers[playerIndex].hand.findLastIndex(t => t === drawnTile);
+      const bonusIdx = findLastMatchingIndex(newPlayers[playerIndex].hand, t => t === drawnTile);
       if (bonusIdx >= 0) {
        const bonusTile = newPlayers[playerIndex].hand.splice(bonusIdx, 1)[0];
        if (!newPlayers[playerIndex].bonusTiles) newPlayers[playerIndex].bonusTiles = [];
@@ -280,7 +348,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const isMenHu = playerIndex !== eastPlayerIdx && state.discardHistory.length <= 1 && state.players[playerIndex].melds.length === 0;
 
     // For human: show Win/Pass buttons if self-draw possible
-    if (playerIndex === 0 && (canWinSelf || canWinTW)) {
+    const localPlayerIdx = get().myPlayerIndex || 0;
+    if (playerIndex === localPlayerIdx && (canWinSelf || canWinTW)) {
       const tempState = { ...state, players: newPlayers, wall: newWall, config: state.config };
       const result = calculateTai(tempState, playerIndex, true, false, isBonusReplacement, false, undefined, false, false, isMenHu, canWinTW);
       if (isMenHu || canWinTW || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
@@ -288,7 +357,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         set({
           players: newPlayers,
           wall: newWall,
-          lastAction: `Player ${playerIndex} drew a tile.`,
+          lastAction: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} drew a tile. (${state.players[playerIndex]?.name || 'Player ' + playerIndex}'s turn)`,
           selfDrawWin: true,
           isHuaShang: isBonusReplacement,
           isMenHu: isMenHu,
@@ -299,19 +368,32 @@ export const useGameStore = create<GameStore>((set, get) => ({
       }
     }
 
+    // Check for self-kong (upgrade pung to kong or concealed kong)
+    let selfKongData: { meldIndex: number; handTileIndex: number; concealedKongTileIndex: number | null } | null = null;
+    if (playerIndex === localPlayerIdx) {
+      const pungUpgrade = canUpgradePungToKong(newPlayers[playerIndex].hand, newPlayers[playerIndex].melds);
+      const concealedKongIdx = canSelfKong(newPlayers[playerIndex].hand);
+      if (pungUpgrade) {
+        selfKongData = { meldIndex: pungUpgrade.meldIndex, handTileIndex: pungUpgrade.handTileIndex, concealedKongTileIndex: null };
+      } else if (concealedKongIdx !== null) {
+        selfKongData = { meldIndex: -1, handTileIndex: concealedKongIdx, concealedKongTileIndex: concealedKongIdx };
+      }
+    }
+
     set({
       players: newPlayers,
       wall: newWall,
+      selfKongData,
      selfDrawWin: false,
      isHuaShang: isBonusReplacement,
      isKangShang: false,
      isMenHu: isMenHu,
       isTW: canWinTW,
-     lastAction: `Player ${playerIndex} drew a tile.`,
-      message: playerIndex === 0 ? 'Your turn to discard.' : `${state.players[playerIndex].name} is thinking...`,
+     lastAction: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} drew a tile. (${state.players[playerIndex]?.name || 'Player ' + playerIndex}'s turn)`,
+      message: playerIndex === (get().myPlayerIndex || 0) ? 'Your turn to discard.' : `${state.players[playerIndex].name} is thinking...`,
     });
 
-    // If AI drew, check self-draw win or auto-discard
+   // If AI drew, check self-draw win or auto-discard
     if (playerIndex !== 0) {
      if (canWinSelf || canWinTW) {
         const tempState = { ...state, players: newPlayers, wall: newWall, config: state.config };
@@ -324,6 +406,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
           return;
         }
       }
+      // Only auto-discard for pure AI players (isHuman === false)
+      // In multiplayer, remote humans send their own discards
+      if (state.players[playerIndex] && !state.players[playerIndex].isHuman) {
       setTimeout(() => {
         const current = get();
         const hand = current.players[playerIndex].hand;
@@ -333,6 +418,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           get().discardTile(playerIndex, discardIdx);
         }
       }, 500);
+      }
     }
   },
 
@@ -356,8 +442,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({
       players: newPlayers,
       discardHistory: [...state.discardHistory, discardedTile],
-      lastAction: `Player ${playerIndex} discarded ${discardedTile.category === 'suit' ? discardedTile.suit + ' ' + discardedTile.value : discardedTile.category === 'honor' ? discardedTile.type : '?'}`,
-      message: `Player ${playerIndex === 0 ? 'You' : state.players[playerIndex].name} discarded a tile.`,
+      lastAction: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} discarded ${discardedTile.category === 'suit' ? discardedTile.suit + ' ' + discardedTile.value : discardedTile.category === 'honor' ? discardedTile.type : '?'}`,
+      message: `Player ${playerIndex === (get().myPlayerIndex || 0) ? 'You' : state.players[playerIndex].name} discarded a tile.`,
     });
 
     // Check if other players can claim this tile
@@ -407,8 +493,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         actions.push('pung');
       }
       // Only the next player in turn can chi
-      const nextPlayer = (playerIndex + 1) % newPlayers.length;
-      if (p === nextPlayer && canChi(playerHand, discardedTile)) {
+      const chiPlayer = getNextPlayer(newPlayers, playerIndex);
+      if (p === chiPlayer && canChi(playerHand, discardedTile)) {
         actions.push('chi');
       }
 
@@ -428,7 +514,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       handleAIClaims(get, set, eligible, discardedTile, playerIndex);
     } else {
       // No one can claim, next player's turn
-      const nextPlayer = (playerIndex + 1) % newPlayers.length;
+      const nextPlayer = getNextPlayer(newPlayers, playerIndex);
+      const nextName = state.players[nextPlayer]?.name || 'Player ' + nextPlayer;
       set({ currentPlayerIndex: nextPlayer });
       get().drawTile(nextPlayer);
     }
@@ -441,7 +528,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     // Remove claimed tile from discardHistory before updating state
     const newDiscardHistory = [...state.discardHistory];
-    const histIdx = state.discardHistory.findLastIndex(t =>
+    const histIdx = findLastMatchingIndex(state.discardHistory, t =>
       tile.category === 'suit' && t.category === 'suit' && t.suit === tile.suit && t.value === tile.value ||
       tile.category === 'honor' && t.category === 'honor' && t.type === tile.type
     );
@@ -476,7 +563,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     // For non-win claims, remove the discard from the discard pile and add to melds
     const discardPile = newPlayers[fromPlayer].discards;
-    const discardIdx = discardPile.findLastIndex(t =>
+    const discardIdx = findLastMatchingIndex(discardPile, t =>
       tile.category === 'suit' && t.category === 'suit' && t.suit === tile.suit && t.value === tile.value ||
       tile.category === 'honor' && t.category === 'honor' && t.type === tile.type
     );
@@ -541,7 +628,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
             chiHandTiles.push(playerHand.splice(idx, 1)[0]);
           }
         }
-        const meldTiles = [tile, ...chiHandTiles];
+        const meldTiles = [tile, ...chiHandTiles].sort((a: any, b: any) => (a.value || 0) - (b.value || 0));
         newPlayers[playerIndex].melds.push({ type: 'chi', tiles: meldTiles, fromPlayer });
       }
     }
@@ -607,7 +694,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           selfDrawWin: false,
           nextDealerPlayerId: playerIndex !== dealerIdx ? nextDealer : null,
           isKangShang: true,
-          message: `${state.players[playerIndex].name} wins by Kang Shang! (${result.totalTai} tai)`,
+          message: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} wins by Kang Shang! (${result.totalTai} tai)`,
         });
         return;
       }
@@ -619,15 +706,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
       waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] },
       wall: claimType === 'kong' ? kongWall : state.wall,
       discardHistory: newDiscardHistory,
-      lastAction: `Player ${playerIndex} claimed with ${claimType}!`,
-      message: playerIndex === 0 ? 'Your turn to discard.' : `${state.players[playerIndex].name} made a ${claimType}!`,
+      lastAction: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} claimed with ${claimType}!`,
+      message: playerIndex === (get().myPlayerIndex || 0) ? 'Your turn to discard.' : `${state.players[playerIndex].name} made a ${claimType}!`,
     });
 
-    // If AI claimed, auto-discard
-    if (playerIndex !== 0) {
-      setTimeout(() => {
-        const current = get();
-        const hand = current.players[playerIndex].hand;
+   // If AI claimed, auto-discard
+    // Only auto-discard for pure AI players (isHuman === false)
+    if (state.players[playerIndex] && !state.players[playerIndex].isHuman) {
+     setTimeout(() => {
+       const current = get();
+       const hand = current.players[playerIndex].hand;
         const melds = current.players[playerIndex].melds;
         const discardIdx = chooseDiscard(hand, melds);
         if (discardIdx >= 0 && discardIdx < hand.length) {
@@ -645,16 +733,75 @@ export const useGameStore = create<GameStore>((set, get) => ({
       waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] },
     });
 
-    const nextPlayer = (fromPlayer + 1) % state.players.length;
+    const nextPlayer = getNextPlayer(state.players, fromPlayer);
     set({ currentPlayerIndex: nextPlayer });
     get().drawTile(nextPlayer);
   },
 
   nextTurn: () => {
     const state = get();
-    const nextPlayer = (state.currentPlayerIndex + 1) % state.players.length;
+    const nextPlayer = getNextPlayer(state.players, state.currentPlayerIndex);
     set({ currentPlayerIndex: nextPlayer });
     get().drawTile(nextPlayer);
+  },
+
+  selfKongAction: (playerIndex: number, meldIndex: number, handTileIndex: number) => {
+    const state = get();
+    if (state.phase !== 'playing') return;
+    const newPlayers = state.players.map(p => ({ ...p, hand: [...p.hand], melds: p.melds.map(m => ({ ...m, tiles: [...m.tiles] })) }));
+
+    // If meldIndex >= 0, upgrade an exposed pung to kong
+    if (meldIndex >= 0 && meldIndex < newPlayers[playerIndex].melds.length) {
+      const tile = newPlayers[playerIndex].hand.splice(handTileIndex, 1)[0];
+      newPlayers[playerIndex].melds[meldIndex].tiles.push(tile);
+      newPlayers[playerIndex].melds[meldIndex].type = 'kong';
+    }
+
+    let newWall = [...state.wall];
+    if (newWall.length > 0) {
+      let kongDraw = newWall.pop()!;
+      while (isBonus(kongDraw)) {
+        if (!newPlayers[playerIndex].bonusTiles) newPlayers[playerIndex].bonusTiles = [];
+        newPlayers[playerIndex].bonusTiles.push(kongDraw);
+        if (newWall.length === 0) break;
+        kongDraw = newWall.pop()!;
+      }
+      newPlayers[playerIndex].hand.push(kongDraw);
+      newPlayers[playerIndex].hand = sortHand(newPlayers[playerIndex].hand);
+
+      // Kang Shang: check if replacement tile gives a win
+      if (checkWin(newPlayers[playerIndex].hand, newPlayers[playerIndex].melds)) {
+        const tempState = { ...state, players: newPlayers, wall: newWall };
+        const result = calculateTai(tempState, playerIndex, true, false, false, true);
+        if ((state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
+            result.totalTai >= state.config.taiThreshold) {
+          const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');
+          set({
+            phase: 'finished', winner: playerIndex, winningTiles: [...newPlayers[playerIndex].hand],
+            players: newPlayers, wall: newWall, selfKongData: null,
+            message: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} wins by Kang Shang! (${result.totalTai} tai)`,
+          });
+          return;
+        }
+      }
+    }
+
+    set({
+      players: newPlayers,
+      wall: newWall,
+      selfKongData: null,
+      currentPlayerIndex: playerIndex,
+      lastAction: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} declared a kong!`,
+      message: playerIndex === (get().myPlayerIndex || 0) ? 'Your turn to discard.' : `${state.players[playerIndex].name} made a kong!`,
+    });
+  },
+
+  concealedKongAction: (playerIndex: number, tileIndex: number) => {
+    get().selfKongAction(playerIndex, -1, tileIndex);
+  },
+
+  passSelfKong: () => {
+    set({ selfKongData: null });
   },
 
   selfDrawWinAction: (playerIndex: number) => {
@@ -678,7 +825,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
        isMenHu: false,
         isTW: false,
        nextDealerPlayerId: playerIndex !== dealerIdx ? nextDealer : null,
-        message: `${state.players[playerIndex].name} wins by ${state.isTW ? 'Thirteen Wonders' : state.isMenHu ? 'Men Hu' : state.isHuaShang ? 'Hua Shang' : state.isKangShang ? 'Kang Shang' : 'self-draw'}! (${result.totalTai} tai)`,
+        message: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} wins by ${state.isTW ? 'Thirteen Wonders' : state.isMenHu ? 'Men Hu' : state.isHuaShang ? 'Hua Shang' : state.isKangShang ? 'Kang Shang' : 'self-draw'}! (${result.totalTai} tai)`,
       });
     }
   },
@@ -687,9 +834,57 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set({ selfDrawWin: false, message: 'Your turn to discard.' });
   },
 
-  reset: () => {
-    const nextId = get().nextDealerPlayerId;
-    set({ ...INITIAL_STATE, showConfig: true, selfDrawWin: false, isHuaShang: false, isKangShang: false, isMenHu: false, isTW: false, nextDealerPlayerId: nextId, waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] }, message: 'Configure and start a new game!' });
+  applyRemoteAction: (playerIndex: number, actionType: string, data: any) => {
+    const state = get();
+    if (state.phase !== 'playing' || !state.isMultiplayer) return;
+    set({ waitingForRemoteAction: false });
+    switch (actionType) {
+      case 'discard': {
+        const tileIndex = data.tileIndex;
+        if (tileIndex >= 0 && tileIndex < (state.players[playerIndex]?.hand || []).length) {
+          get().discardTile(playerIndex, tileIndex);
+        }
+        break;
+      }
+      case 'self_draw_win': {
+        get().selfDrawWinAction(playerIndex);
+        break;
+      }
+     case 'pass_self_draw': {
+       get().passSelfDrawWin();
+       break;
+     }
+      case 'win':
+      case 'kong':
+      case 'pung':
+      case 'chi': {
+        get().claimTile(playerIndex, actionType, data?.chiTiles);
+        break;
+      }
+      case 'pass_claim': {
+        get().passClaim();
+        break;
+      }
+      case 'self_kong': {
+        get().selfKongAction(playerIndex, data.meldIndex, data.handTileIndex);
+        break;
+      }
+      case 'concealed_kong': {
+        get().concealedKongAction(playerIndex, data.tileIndex);
+        break;
+      }
+      case 'pass_self_kong': {
+        get().passSelfKong();
+        break;
+      }
+    }
+  },
+
+ reset: () => {
+   const nextId = get().nextDealerPlayerId;
+    const prevDealerCount = get().dealerCount || 0;
+    const prevRoundWind = get().roundWind || 'east';
+    set({ ...INITIAL_STATE, showConfig: true, selfDrawWin: false, isHuaShang: false, isKangShang: false, isMenHu: false, isTW: false, nextDealerPlayerId: nextId, dealerCount: prevDealerCount, roundWind: prevRoundWind, selfKongData: null, waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] }, message: 'Configure and start a new game!' });
   },
 }));
 
@@ -700,38 +895,56 @@ function handleAIClaims(
   tile: Tile,
   fromPlayer: number,
 ) {
-  // Simple AI: prefer win > kong > pung > pass
-  for (const { playerIndex, actions } of eligible) {
-    if (playerIndex === 0) continue; // Human decides
-
-    setTimeout(() => {
-      const state = get();
-      if (state.waitingForClaim.tile === tile) {
-        if (actions.includes('win')) {
-          get().claimTile(playerIndex, 'win');
-          return;
-        }
-        if (actions.includes('kong')) {
-          get().claimTile(playerIndex, 'kong');
-          return;
-        }
-        if (actions.includes('pung')) {
-          get().claimTile(playerIndex, 'pung');
-          return;
-        }
-      }
-    }, 200);
-  }
-
-  // AI passes after a delay if human doesn't claim
+  // Priority: Win > Kong > Pung > Chi
+  // Within same priority, closest clockwise from discarder has priority
+  // Process all AI claims in one batch with correct ordering
   setTimeout(() => {
     const state = get();
-    if (state.waitingForClaim.tile === tile) {
-      // Check if human can claim
-      const humanEligible = eligible.find(e => e.playerIndex === 0);
-      if (!humanEligible) {
-        get().passClaim();
+    if (state.waitingForClaim.tile !== tile) return;
+
+    const playerCount = state.players.length;
+    // Build clockwise order starting from the player AFTER the discarder
+    const orderedPlayers: number[] = [];
+    for (let offset = 1; offset < playerCount; offset++) {
+      orderedPlayers.push((fromPlayer + offset) % playerCount);
+    }
+
+    // Check each priority level: Win > Kong > Pung
+    for (const actionType of ['win', 'kong', 'pung']) {
+      for (const pIdx of orderedPlayers) {
+        const found = eligible.find(e => e.playerIndex === pIdx && e.actions.includes(actionType));
+        if (found && state.players[found.playerIndex]) {
+          if (state.players[found.playerIndex].isHuman) return; // Human decides — stop AI processing
+          get().claimTile(found.playerIndex, actionType as any);
+          return;
+        }
       }
     }
-  }, 1500);
+
+    // Chi: only the next player clockwise from discarder
+    const nextPlayer = getNextPlayer(state.players, fromPlayer);
+    const chiFound = eligible.find(e => e.playerIndex === nextPlayer && e.actions.includes('chi'));
+    if (chiFound && state.players[chiFound.playerIndex]) {
+      if (state.players[chiFound.playerIndex].isHuman) return; // Human decides
+      const t = state.waitingForClaim.tile;
+      if (t && t.category === 'suit') {
+        const suit = t.suit;
+        const val = t.value;
+        const handSuit = state.players[chiFound.playerIndex].hand.filter((ht: any) => ht.category === 'suit' && ht.suit === suit);
+        for (let v1 = Math.max(1, val - 2); v1 <= Math.min(val, 7); v1++) {
+          const needed = [v1, v1 + 1, v1 + 2].filter(v => v !== val);
+          const chiTiles: any[] = [];
+          for (const nv of needed) {
+            const found = handSuit.find((ht: any) => ht.value === nv);
+            if (found) chiTiles.push(found);
+          }
+          if (chiTiles.length === needed.length) {
+            get().claimTile(chiFound.playerIndex, 'chi', chiTiles);
+            return;
+          }
+        }
+      }
+    }
+  }, 200);
+
 }
