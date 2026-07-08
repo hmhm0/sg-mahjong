@@ -38,15 +38,6 @@ function findMelds(hand: Tile[], count: number): Tile[][] | null {
   const nonFei = hand.filter(t => !isFei(t));
   const feiCount = hand.filter(isFei).length;
 
-  // All fei: consume 3 per meld
-  if (nonFei.length === 0) {
-    if (feiCount >= 3) {
-      const rest = findMelds(hand.slice(3), count - 1);
-      if (rest !== null) return [hand.slice(0, 3), ...rest];
-    }
-    return null;
-  }
-
   const first = hand.find(t => !isFei(t))!;
 
   // ── Sequence (suit tiles only, with 0-3 fei subs) ──
@@ -122,7 +113,7 @@ function hasPair(hand: Tile[]): Tile[] | null {
   for (let i = 0; i < hand.length; i++) {
     for (let j = i + 1; j < hand.length; j++) {
       const feiInPair = [hand[i], hand[j]].filter(isFei).length;
-      if (feiInPair > 1) continue; // fei+fei cannot be a pair
+      if (feiInPair > 1) continue; // two fei alone are not treated as a natural pair here
       if (tileEqual(hand[i], hand[j]) || feiInPair === 1) {
         const pair = [hand[i], hand[j]];
         const remaining = removeTiles(hand, pair);
@@ -157,7 +148,7 @@ export function checkWin(hand: Tile[], melds: Meld[]): boolean {
     for (let j = i + 1; j < playableHand.length; j++) {
       const pair = [playableHand[i], playableHand[j]];
       const feiInPair = pair.filter(isFei).length;
-      if (feiInPair > 1) continue; // fei+fei is not a valid pair
+      if (feiInPair > 1) continue; // two fei alone are not treated as the pair
       if (tileEqual(playableHand[i], playableHand[j]) || feiInPair === 1) {
         const remaining = removeTiles(playableHand, pair);
         const meldList = findMelds(remaining, remainingMeldCount);
@@ -500,7 +491,7 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
   const breakdown: { name: string; tai: number }[] = [];
   let tai = 0;
 
-  const hand = player.hand;
+  const hand = winningTile ? [...player.hand, winningTile] : player.hand;
   const melds = player.melds;
   const allTiles = [...hand, ...melds.flatMap(m => m.tiles)];
   const suitCounts: Record<string, number> = { bamboo: 0, characters: 0, dots: 0 };

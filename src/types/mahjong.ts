@@ -65,6 +65,7 @@ export interface GameState {
   lastAction: string;
   winner: number | null;
   winningTiles: Tile[];
+  winMethod: 'discard' | 'self_draw' | 'qiang_kang' | 'kang_shang' | 'tian_hu' | 'di_hu' | 'men_hu' | 'qi_qiang_yi' | 'hua_hu' | 'hua_shang' | 'thirteen_wonders' | null;
   discardHistory: Tile[];
   moveHistory: string[];
   hostDisconnected: boolean;

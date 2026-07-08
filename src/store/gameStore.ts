@@ -75,6 +75,7 @@ const INITIAL_STATE: GameState = {
   lastAction: '',
   winner: null,
   winningTiles: [],
+  winMethod: null,
   discardHistory: [],
   moveHistory: [],
   hostDisconnected: false,
@@ -192,24 +193,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (checkWin(players[eastPlayerIndex].hand, players[eastPlayerIndex].melds)) {
       const tempState = { players, config, roundWind: 'east' } as GameState;
       const result = calculateTai(tempState, eastPlayerIndex, false, false, false, false, undefined, true);
-      set({
-        nextDealerPlayerId: null,
-  selfKongData: null,
-  dealerCount: 0,
-  isMultiplayer: false,
-  isHost: false,
-  myPlayerIndex: 0,
-  waitingForRemoteAction: false,
-        players,
-        wall: remainingWall,
-        deadWall: [],
-        phase: 'finished',
-        winner: eastPlayerIndex,
-        winningTiles: [...players[eastPlayerIndex].hand],
-        showConfig: false,
-        message: `Tian Hu! ${players[eastPlayerIndex].name} wins with the opening hand! (${result.totalTai} tai)`,
-        lastAction: `Tian Hu! ${players[eastPlayerIndex].name} wins with the opening hand!`,
-      });
+        set({
+          nextDealerPlayerId: null,
+          selfKongData: null,
+          dealerCount: 0,
+          isMultiplayer: false,
+          isHost: false,
+          myPlayerIndex: 0,
+          waitingForRemoteAction: false,
+          players,
+          wall: remainingWall,
+          deadWall: [],
+          phase: 'finished',
+          winner: eastPlayerIndex,
+          winningTiles: [...players[eastPlayerIndex].hand],
+          winMethod: 'tian_hu',
+          showConfig: false,
+          message: `Tian Hu! ${players[eastPlayerIndex].name} wins with the opening hand! (${result.totalTai} tai)`,
+          lastAction: `Tian Hu! ${players[eastPlayerIndex].name} wins with the opening hand!`,
+        });
       return;
     }
 
@@ -288,6 +290,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           phase: 'finished',
           winner: qqyWinner,
           winningTiles: [],
+          winMethod: 'qi_qiang_yi',
           showConfig: false,
           lastAction: `Qi Qiang Yi! ${state.players[qqyWinner].name} wins with all 8 flowers/seasons!`,
           message: `Qi Qiang Yi! ${state.players[qqyWinner].name} wins with all 8 flowers/seasons! (${qqyResult.totalTai} tai)`,
@@ -311,6 +314,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
             phase: 'finished',
             winner: playerIndex,
             winningTiles: [],
+            winMethod: 'hua_hu',
             showConfig: false,
             lastAction: `Hua Hu! ${state.players[playerIndex].name} wins with all 8 flowers/seasons!`,
             message: `Hua Hu! ${state.players[playerIndex].name} wins with all 8 flowers/seasons! (${hhResult.totalTai} tai)`,
@@ -545,13 +549,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const isTWClaim = isThirteenWonders([...newPlayers[playerIndex].hand, tile], newPlayers[playerIndex].melds);
       const result = calculateTai(state, playerIndex, false, false, false, false, tile, false, isDiHu, false, false, isTWClaim);
       if (isDiHu || isTWClaim || result.totalTai >= state.config.taiThreshold || state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) {
-        newPlayers[playerIndex].melds.push({ type: 'chi', tiles: [tile], fromPlayer });
         const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');
         const nextDealer = playerIndex !== dealerIdx ? (dealerIdx + 1) % 4 : dealerIdx;
-        set({
+          set({
           phase: 'finished',
           winner: playerIndex,
           winningTiles: [...newPlayers[playerIndex].hand, tile],
+          winMethod: 'discard',
           players: newPlayers,
           discardHistory: newDiscardHistory,
           nextDealerPlayerId: playerIndex !== dealerIdx ? nextDealer : null,
@@ -586,6 +590,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
             phase: 'finished',
             winner: p,
             winningTiles: [...state.players[p].hand, tile],
+            winMethod: 'qiang_kang',
             players: state.players.map(pl => ({ ...pl, hand: [...pl.hand], melds: [...pl.melds] })),
             discardHistory: newDiscardHistory,
             nextDealerPlayerId: p !== dealerIdx ? nextDealer : null,
@@ -682,10 +687,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }
         const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');
         const nextDealer = playerIndex !== dealerIdx ? (dealerIdx + 1) % 4 : dealerIdx;
-        set({
+          set({
           phase: 'finished',
           winner: playerIndex,
           winningTiles: [...newPlayers[playerIndex].hand],
+          winMethod: 'kang_shang',
           players: newPlayers,
           currentPlayerIndex: playerIndex,
           waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] },
@@ -778,7 +784,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
           const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');
           set({
             phase: 'finished', winner: playerIndex, winningTiles: [...newPlayers[playerIndex].hand],
-            players: newPlayers, wall: newWall, selfKongData: null,
+            players: newPlayers, wall: newWall, selfKongData: null, winMethod: 'kang_shang',
             message: `${state.players[playerIndex]?.name || 'Player ' + playerIndex} wins by Kang Shang! (${result.totalTai} tai)`,
           });
           return;
@@ -818,6 +824,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         phase: 'finished',
         winner: playerIndex,
         winningTiles: [...newPlayers[playerIndex].hand],
+        winMethod: state.isTW ? 'thirteen_wonders' : state.isMenHu ? 'men_hu' : state.isHuaShang ? 'hua_shang' : state.isKangShang ? 'kang_shang' : 'self_draw',
         players: newPlayers,
         selfDrawWin: false,
         isHuaShang: false,
@@ -884,7 +891,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
    const nextId = get().nextDealerPlayerId;
     const prevDealerCount = get().dealerCount || 0;
     const prevRoundWind = get().roundWind || 'east';
-    set({ ...INITIAL_STATE, showConfig: true, selfDrawWin: false, isHuaShang: false, isKangShang: false, isMenHu: false, isTW: false, nextDealerPlayerId: nextId, dealerCount: prevDealerCount, roundWind: prevRoundWind, selfKongData: null, waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] }, message: 'Configure and start a new game!' });
+  set({ ...INITIAL_STATE, showConfig: true, selfDrawWin: false, isHuaShang: false, isKangShang: false, isMenHu: false, isTW: false, nextDealerPlayerId: nextId, dealerCount: prevDealerCount, roundWind: prevRoundWind, selfKongData: null, waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] }, message: 'Configure and start a new game!' });
   },
 }));
 

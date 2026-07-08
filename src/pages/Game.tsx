@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { GameTable } from '../components/GameTable';
 import { useGameStore } from '../store/gameStore';
 import { connection } from '../utils/connection';
 import { buildDeck, seededShuffle, sortHand, isBonus } from '../game/tiles';
 import { generateDiceResults } from '../components/MultiplayerDiceOverlay';
+import { calculateTai } from '../game/rules';
 
 export function Game() {
   const reset = useGameStore(s => s.reset);
@@ -13,11 +14,73 @@ export function Game() {
   const config = useGameStore(s => s.config);
   const lastAction = useGameStore(s => s.lastAction);
   const moveHistory = useGameStore(s => s.moveHistory);
+  const winner = useGameStore(s => s.winner);
+  const winningTiles = useGameStore(s => s.winningTiles);
+  const winMethod = useGameStore(s => s.winMethod);
+  const players = useGameStore(s => s.players);
+  const wall = useGameStore(s => s.wall);
+  const deadWall = useGameStore(s => s.deadWall);
+  const currentPlayerIndex = useGameStore(s => s.currentPlayerIndex);
+  const roundWind = useGameStore(s => s.roundWind);
+  const discardHistory = useGameStore(s => s.discardHistory);
+  const diceResults = useGameStore(s => s.diceResults);
   const [playAgainReady, setPlayAgainReady] = useState<number[]>([]);
-  // moveHistory is now in the store (useGameStore)
   const [showHistory, setShowHistory] = useState(false);
+  const [showWinPopup, setShowWinPopup] = useState(true);
+  const [winCountdown, setWinCountdown] = useState(30);
   const readyRef = useRef<number[]>([]);
   const lastActionRef = useRef('');
+  const hasAutoAdvancedRef = useRef(false);
+
+  const winSummary = useMemo(() => {
+    if (phase !== 'finished' || winner === null) return null;
+    const winnerPlayer = players[winner];
+    if (!winnerPlayer) return null;
+
+    const summaryPlayers = players.map((p, i) => (i === winner ? { ...p, hand: [...winningTiles] } : p));
+    const summaryState = {
+      players: summaryPlayers,
+      wall,
+      deadWall,
+      currentPlayerIndex,
+      phase,
+      roundWind,
+      config,
+      lastAction,
+      winner,
+      winningTiles,
+      discardHistory,
+      moveHistory,
+      hostDisconnected: false,
+      playerLeft: null,
+      diceResults,
+      winMethod,
+    } as any;
+
+    const selfDraw = winMethod === 'self_draw' || winMethod === 'kang_shang' || winMethod === 'men_hu';
+    const result = calculateTai(
+      summaryState,
+      winner,
+      selfDraw,
+      false,
+      false,
+      winMethod === 'kang_shang',
+      undefined,
+      winMethod === 'tian_hu',
+      winMethod === 'di_hu',
+      winMethod === 'men_hu',
+      winMethod === 'thirteen_wonders',
+      winMethod === 'qi_qiang_yi',
+      winMethod === 'hua_hu',
+    );
+
+    return {
+      name: winnerPlayer.name,
+      reason: lastAction || 'Winning hand',
+      totalTai: result.totalTai,
+      breakdown: result.breakdown,
+    };
+  }, [phase, winner, winningTiles, players, wall, deadWall, currentPlayerIndex, roundWind, config, lastAction, discardHistory, moveHistory, diceResults, winMethod]);
 
   // Track lastAction changes for move history (host only — join client receives via state_update)
   useEffect(() => {
@@ -33,6 +96,11 @@ export function Game() {
     if (phase === 'playing') {
       useGameStore.setState({ moveHistory: [] });
       lastActionRef.current = '';
+      setShowWinPopup(true);
+      setWinCountdown(30);
+      setPlayAgainReady([]);
+      readyRef.current = [];
+      hasAutoAdvancedRef.current = false;
     }
   }, [phase]);
 
@@ -50,6 +118,35 @@ export function Game() {
       unsub();
     };
   }, []);
+
+  useEffect(() => {
+    if (phase !== 'finished' || winner === null) return;
+    if (!showWinPopup && winCountdown <= 0) return;
+    if (winCountdown <= 0) {
+      setShowWinPopup(false);
+      return;
+    }
+    const t = setTimeout(() => setWinCountdown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [phase, winner, showWinPopup, winCountdown]);
+
+  useEffect(() => {
+    if (!isHost || phase !== 'finished' || winner === null || hasAutoAdvancedRef.current) return;
+    const state = useGameStore.getState();
+    const allReady = state.players.every((p: any) => !p.isHuman || readyRef.current.includes(p.id));
+    if (!allReady || readyRef.current.length === 0) return;
+
+    hasAutoAdvancedRef.current = true;
+    const t = setTimeout(() => {
+      useGameStore.getState().startGame(config);
+      readyRef.current = [];
+      setPlayAgainReady([]);
+      setShowWinPopup(true);
+      setWinCountdown(30);
+      hasAutoAdvancedRef.current = false;
+    }, 500);
+    return () => clearTimeout(t);
+  }, [playAgainReady, phase, winner, isHost, config]);
 
   const handleQuit = () => {
     if (isMultiplayer) {
@@ -79,6 +176,17 @@ export function Game() {
         return next;
       });
     }
+  };
+
+  const toggleReady = () => {
+    const pi = isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0);
+    const isNowReady = !playAgainReady.includes(pi);
+    connection.send({ type: 'player_ready', playerIndex: pi, ready: isNowReady });
+    setPlayAgainReady(prev => {
+      const next = isNowReady ? [...prev.filter(i => i !== pi), pi] : prev.filter(i => i !== pi);
+      readyRef.current = next;
+      return next;
+    });
   };
 
   // Host: when all real players ready, start new game
@@ -179,15 +287,6 @@ export function Game() {
         >
           Quit Game
         </button>
-        {phase === 'finished' && isMultiplayer && (
-          <button
-            onClick={handlePlayAgain}
-            className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg font-bold text-sm transition-colors shadow-lg animate-pulse"
-          >
-            {playAgainReady.includes(isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0))
-              ? '✓ Ready' : 'Play Again'}
-          </button>
-        )}
       </div>
       <div className="absolute top-3 right-3 z-10">
         <button
@@ -217,6 +316,62 @@ export function Game() {
             </div>
           </div>
         </div>
+      )}
+      {phase === 'finished' && winner !== null && winSummary && (
+        <>
+          {showWinPopup ? (
+            <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 px-4" onClick={() => setShowWinPopup(false)}>
+              <div className="w-full max-w-xl bg-green-800/95 border border-green-600/60 rounded-2xl shadow-2xl p-6 max-h-[82vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <div className="text-yellow-300 text-xs uppercase tracking-[0.2em] mb-1">Round End</div>
+                    <h2 className="text-2xl font-bold text-white">{winSummary.name} wins</h2>
+                  </div>
+                  <button
+                    onClick={() => setShowWinPopup(false)}
+                    className="text-green-200 hover:text-white text-sm px-3 py-1 rounded-md bg-green-700/60"
+                  >
+                    Close
+                  </button>
+                </div>
+                <p className="text-green-100 text-sm mb-4">{winSummary.reason}</p>
+                <div className="text-center mb-4">
+                  <div className="text-5xl font-bold text-yellow-300">{winSummary.totalTai}</div>
+                  <div className="text-green-200 text-sm mt-1">tai total</div>
+                </div>
+                <div className="space-y-1 mb-4">
+                  {winSummary.breakdown.map((item, i) => (
+                    <div key={i} className="flex items-center justify-between text-sm bg-green-700/40 rounded-lg px-3 py-2">
+                      <span className="text-green-100">{item.name}</span>
+                      <span className="text-yellow-300 font-bold">+{item.tai}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between text-xs text-green-200/80">
+                  <span>Auto closes in {winCountdown}s</span>
+                  <span>{playAgainReady.length} ready</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center">
+              <div className="pointer-events-auto bg-green-800/90 border border-green-600/60 rounded-2xl shadow-2xl p-4 flex items-center gap-3">
+                <button
+                  onClick={() => setShowWinPopup(true)}
+                  className="px-4 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 text-white font-bold text-sm"
+                >
+                  Show Result
+                </button>
+                <button
+                  onClick={toggleReady}
+                  className={`px-4 py-2 rounded-lg font-bold text-sm ${playAgainReady.includes(isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0)) ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}`}
+                >
+                  {playAgainReady.includes(isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0)) ? '✓ Ready' : 'Ready'}
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
       <GameTable />
     </div>
