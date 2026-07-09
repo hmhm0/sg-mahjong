@@ -17,7 +17,7 @@ export function GameTable() {
     return Math.min(1, vh / contentHeight);
   }, []);
 
-  const { players, wall, phase, currentPlayerIndex, message, roundWind, config, waitingForClaim, drawTile, discardTile, claimTile, passClaim, winner, discardHistory, selfDrawWin, selfDrawWinAction, passSelfDrawWin, isMultiplayer, isHost, myPlayerIndex, diceResults, lastAction, selfKongData, selfKongAction, passSelfKong, dealerCount } = useGameStore();
+  const { players, wall, phase, currentPlayerIndex, message, roundWind, config, waitingForClaim, drawTile, discardTile, claimTile, passClaim, winner, discardHistory, selfDrawWin, selfDrawWinAction, passSelfDrawWin, isMultiplayer, isHost, myPlayerIndex, diceResults, lastAction, selfKongData, selfKongAction, passSelfKong, dealerCount, dealerPlayerId } = useGameStore();
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [chiSelection, setChiSelection] = useState<{ display: any[]; handTiles: any[] }[] | null>(null);
   const [inactiveWarning, setInactiveWarning] = useState<string | null>(null);
@@ -56,12 +56,9 @@ export function GameTable() {
 
   const humanIdx = (myPlayerIndex !== undefined && myPlayerIndex !== null) ? myPlayerIndex : 0;
   const pc = players.length || 4;
-  const windOrder = ['east', 'south', 'west', 'north'];
-  const myWind = players[humanIdx]?.seatWind || 'east';
-  const myWindIdx = windOrder.indexOf(myWind);
-  const rightIdx = players.findIndex(p => p.seatWind === windOrder[(myWindIdx + 1) % 4]);
-  const topIdx = players.findIndex(p => p.seatWind === windOrder[(myWindIdx + 2) % 4]);
-  const leftIdx = players.findIndex(p => p.seatWind === windOrder[(myWindIdx + 3) % 4]);
+  const rightIdx = (humanIdx + 1) % pc;
+  const topIdx = (humanIdx + 2) % pc;
+  const leftIdx = (humanIdx + 3) % pc;
   const human = players[humanIdx];
   if (!human) return null;
 
@@ -74,7 +71,12 @@ export function GameTable() {
     const result: Record<number, any> = {};
     for (let i = 0; i < players.length; i++) {
       try {
-        result[i] = calculateTai({ players, wall, deadWall: [], currentPlayerIndex, phase, roundWind: roundWind || "east", config, lastAction: "", winner, winningTiles: [] } as any, i, false, i !== 0);
+        result[i] = calculateTai(
+          { players, wall, deadWall: [], currentPlayerIndex, phase, roundWind: roundWind || "east", config, lastAction: "", winner, winningTiles: [] } as any,
+          i,
+          false,
+          true,
+        );
       } catch (e) {
         result[i] = { totalTai: 0, tai: 0, breakdown: [], feiPenalty: 0 };
       }
@@ -158,7 +160,7 @@ export function GameTable() {
             <span className="text-green-300 text-xs" style={{ display: "flex", alignItems: "center", gap: "4px" }}>
               <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[players[topIdx].seatWind] || ""}</span>
               {players[topIdx].name}{!AI_BOT_NAMES.includes(players[topIdx].name) && ` (P${topIdx})`}
-              {players[topIdx].seatWind === 'east' && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
+              {players[topIdx].id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
               <span className="text-yellow-300 text-xs">- {playerTai[players[topIdx].id]?.totalTai ?? 0} tai</span>
             </span>
             <div className="flex gap-0.5">
@@ -194,7 +196,7 @@ export function GameTable() {
             <>
               <span className="text-green-300 text-xs font-medium">{players[leftIdx].name}</span>
               {!AI_BOT_NAMES.includes(players[leftIdx].name) && <span className="text-green-400 text-xs font-medium"> (P{leftIdx})</span>}
-              {players[leftIdx].seatWind === 'east' && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
+              {players[leftIdx].id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
               <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[players[leftIdx].seatWind] || ""}</span>
               <span className="text-yellow-300 text-xs">- {playerTai[players[leftIdx].id]?.totalTai ?? 0} tai</span>
               <div className="flex items-start gap-3">
@@ -267,7 +269,7 @@ export function GameTable() {
             <>
               <span className="text-green-300 text-xs font-medium">{players[rightIdx].name}</span>
               {!AI_BOT_NAMES.includes(players[rightIdx].name) && <span className="text-green-400 text-xs font-medium"> (P{rightIdx})</span>}
-              {players[rightIdx].seatWind === 'east' && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
+              {players[rightIdx].id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
               <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[players[rightIdx].seatWind] || ""}</span>
               <span className="text-yellow-300 text-xs">- {playerTai[players[rightIdx].id]?.totalTai ?? 0} tai</span>
               <div className="flex items-start gap-3">
@@ -333,7 +335,7 @@ export function GameTable() {
 
         <div className="flex items-center justify-center gap-1 mb-1">
           <span className="text-green-300 text-xs">You (P{humanIdx})</span>
-          {human.seatWind === 'east' && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
+          {human.id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
           <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[human.seatWind]}</span>
           <span className="text-yellow-300 text-xs">- {playerTai[humanIdx]?.totalTai ?? 0} tai</span>
         </div>
@@ -417,8 +419,6 @@ export function GameTable() {
           )}
         </div>
       </div>
-
-      {phase === 'finished' && winner !== null && <div>Game Over! Winner: {players[winner]?.name}</div>}
     </div>
   );
 }

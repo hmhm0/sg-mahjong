@@ -3,6 +3,8 @@ import { useGameStore } from '../store/gameStore';
 import { buildDeck, seededShuffle, sortHand } from '../game/tiles';
 import { connection, SERVER_URL } from '../utils/connection';
 import { generateDiceResults, MultiplayerDiceOverlay } from '../components/MultiplayerDiceOverlay';
+import { navigate } from '../utils/navigation';
+import { track } from '../utils/analytics';
 const AI_BOT_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
 
 export function JoinGame() {
@@ -42,6 +44,7 @@ export function JoinGame() {
 
     setError('');
     setStatus('Connecting to server...');
+    track('join_room_opened');
 
     try {
       await connection.connect(SERVER_URL);
@@ -55,6 +58,7 @@ export function JoinGame() {
         const defaultName = `Player ${msg.playerIndex + 1}`;
         const finalName = playerName.trim() || defaultName;
         connection.send({ type: 'player_name', playerIndex: msg.playerIndex, name: finalName });
+        track('room_joined', { room_code: msg.code, player_index: msg.playerIndex, name: finalName });
         setPlayerName(finalName);
         setStatus('Set your name below, toggle Ready, and wait.');
         setJoined(true);
@@ -68,6 +72,8 @@ export function JoinGame() {
 
       connection.on('room_closed', () => {
         startedRef.current = true;
+        setStatus('Room closed.');
+        setError('The room has been closed.');
         useGameStore.setState({ hostDisconnected: true });
       });
 
@@ -121,6 +127,7 @@ export function JoinGame() {
       connection.on('state_update', (msg) => {
         startedRef.current = true;
         stateUpdateArrivedRef.current = true;
+        track('multiplayer_state_received', { room_code: connection.roomCode, player_index: connection.playerIndex });
         const state = msg.state;
         state.isMultiplayer = true;
         state.isHost = false;
@@ -128,7 +135,7 @@ export function JoinGame() {
         useGameStore.setState(state);
         // Navigate only if no dice overlay is showing
         if (!diceDataRef.current) {
-          window.location.hash = '#/';
+          navigate('/');
         }
       });
 
@@ -152,7 +159,7 @@ export function JoinGame() {
   const handleCancel = () => {
     connection.send({ type: 'leave_room' });
     connection.disconnect();
-    window.location.hash = '#/';
+    navigate('/');
   };
 
   return (
@@ -255,7 +262,7 @@ export function JoinGame() {
           diceDataRef.current = null;
           setDiceData(null);
           if (stateUpdateArrivedRef.current) {
-            window.location.hash = '#/';
+            navigate('/');
           }
         }}
       />

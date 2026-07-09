@@ -3,7 +3,8 @@ const { WebSocketServer } = require('ws');
 const PORT = 3002;
 const wss = new WebSocketServer({ port: PORT });
 
-const rooms = {}; // code -> { host: ws, players: [ws|null*4], config: null, seed: null }
+const EMPTY_ROOM_TIMEOUT_MS = 10 * 60 * 1000;
+const rooms = {}; // code -> { host: ws, players: [ws|null*4], config: null, seed: null, ready: boolean[], started: boolean, emptyRoomTimer: Timeout|null }
 
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -27,6 +28,26 @@ function send(ws, message) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(message));
 }
 
+function clearEmptyRoomTimer(roomCode) {
+  const room = rooms[roomCode];
+  if (!room || !room.emptyRoomTimer) return;
+  clearTimeout(room.emptyRoomTimer);
+  room.emptyRoomTimer = null;
+}
+
+function scheduleEmptyRoomTimer(roomCode) {
+  const room = rooms[roomCode];
+  if (!room || room.started) return;
+  if (room.players.some(p => p !== null)) return;
+  clearEmptyRoomTimer(roomCode);
+  room.emptyRoomTimer = setTimeout(() => {
+    const current = rooms[roomCode];
+    if (!current || current.started || current.players.some(p => p !== null)) return;
+    broadcast(roomCode, { type: 'room_closed', reason: 'empty_timeout' });
+    delete rooms[roomCode];
+  }, EMPTY_ROOM_TIMEOUT_MS);
+}
+
 wss.on('connection', (ws) => {
   let currentRoom = null;
   let playerIndex = -1;
@@ -43,11 +64,20 @@ wss.on('connection', (ws) => {
           let code = generateCode();
           while (rooms[code]) code = generateCode();
 
-          rooms[code] = { host: ws, players: [null, null, null, null], config: null, seed: null, ready: [false, false, false, false] };
+          rooms[code] = {
+            host: ws,
+            players: [null, null, null, null],
+            config: null,
+            seed: null,
+            ready: [false, false, false, false],
+            started: false,
+            emptyRoomTimer: null,
+          };
           currentRoom = code;
           playerIndex = 0;
 
           send(ws, { type: 'room_created', code, playerIndex: 0 });
+          scheduleEmptyRoomTimer(code);
           break;
         }
 
@@ -61,6 +91,7 @@ wss.on('connection', (ws) => {
           if (freeSlot === -1) return send(ws, { type: 'error', message: 'Room is full' });
 
           room.players[freeSlot] = ws;
+          clearEmptyRoomTimer(msg.code);
           currentRoom = msg.code;
           playerIndex = freeSlot;
 
@@ -81,6 +112,8 @@ wss.on('connection', (ws) => {
 
           room.config = msg.config;
           room.seed = Math.floor(Math.random() * 2147483647);
+          room.started = true;
+          clearEmptyRoomTimer(currentRoom);
 
           const playerCount = room.players.filter(p => p !== null).length + 1; // +1 for host
 
@@ -161,6 +194,7 @@ wss.on('connection', (ws) => {
           if (!room2) return send(ws, { type: 'error', message: 'Room not found' });
           playerIndex = msg.playerIndex;
           room2.players[playerIndex - 1] = ws;
+          clearEmptyRoomTimer(msg.code);
           currentRoom = msg.code;
           send(ws, { type: 'room_joined', code: msg.code, playerIndex: msg.playerIndex });
           broadcast(msg.code, { type: 'player_joined', playerIndex: msg.playerIndex });
@@ -193,6 +227,7 @@ function cleanupRoom(code, ws) {
 
   if (ws === room.host) {
     // Host disconnected - close the room
+    clearEmptyRoomTimer(code);
     broadcast(code, { type: 'room_closed' });
     delete rooms[code];
   } else {
@@ -200,6 +235,7 @@ function cleanupRoom(code, ws) {
     if (idx !== -1) {
       room.players[idx] = null;
       broadcast(code, { type: 'player_left', playerIndex: idx + 1 });
+      scheduleEmptyRoomTimer(code);
     }
   }
 }

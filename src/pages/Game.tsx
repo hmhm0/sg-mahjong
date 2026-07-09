@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { GameTable } from '../components/GameTable';
+import { Tile as MahjongTile, MeldDisplay } from '../components/Tile';
 import { useGameStore } from '../store/gameStore';
 import { connection } from '../utils/connection';
 import { buildDeck, seededShuffle, sortHand, isBonus } from '../game/tiles';
 import { generateDiceResults } from '../components/MultiplayerDiceOverlay';
 import { calculateTai } from '../game/rules';
+import type { Tile } from '../types/mahjong';
 
 const WIN_HEADLINE_PRIORITY = [
   'Tian Hu (天胡)',
@@ -40,8 +42,16 @@ function getWinHeadline(
   return `${fallbackName} wins`;
 }
 
+function tileKey(tile: Tile): string {
+  if (tile.category === 'suit') return `suit:${tile.suit}:${tile.value}`;
+  if (tile.category === 'honor') return `honor:${tile.type}`;
+  if (tile.category === 'bonus') return `bonus:${tile.bonusType}:${tile.id}`;
+  return 'fei';
+}
+
 export function Game() {
   const reset = useGameStore(s => s.reset);
+  const clearDebugLogs = useGameStore(s => s.clearDebugLogs);
   const isMultiplayer = useGameStore(s => s.isMultiplayer);
   const isHost = useGameStore(s => s.isHost);
   const phase = useGameStore(s => s.phase);
@@ -50,6 +60,7 @@ export function Game() {
   const moveHistory = useGameStore(s => s.moveHistory);
   const winner = useGameStore(s => s.winner);
   const winningTiles = useGameStore(s => s.winningTiles);
+  const lastDrawnTile = useGameStore(s => s.lastDrawnTile);
   const winMethod = useGameStore(s => s.winMethod);
   const players = useGameStore(s => s.players);
   const wall = useGameStore(s => s.wall);
@@ -58,12 +69,15 @@ export function Game() {
   const roundWind = useGameStore(s => s.roundWind);
   const discardHistory = useGameStore(s => s.discardHistory);
   const diceResults = useGameStore(s => s.diceResults);
+  const nextRoundCountdown = useGameStore(s => s.nextRoundCountdown);
+  const debugLogs = useGameStore(s => s.debugLogs);
   const [playAgainReady, setPlayAgainReady] = useState<number[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [showWinPopup, setShowWinPopup] = useState(true);
   const [winCountdown, setWinCountdown] = useState(30);
+  const [winPopupTimerEnabled, setWinPopupTimerEnabled] = useState(true);
   const readyRef = useRef<number[]>([]);
-  const lastActionRef = useRef('');
   const hasAutoAdvancedRef = useRef(false);
 
   const winSummary = useMemo(() => {
@@ -92,12 +106,31 @@ export function Game() {
     } as any;
 
     const selfDraw = winMethod === 'self_draw' || winMethod === 'kang_shang' || winMethod === 'men_hu';
+    const baseHand = winnerPlayer.hand || [];
+    const remainingCounts = new Map<string, number>();
+    for (const tile of baseHand) {
+      const key = tileKey(tile);
+      remainingCounts.set(key, (remainingCounts.get(key) || 0) + 1);
+    }
+    let winningDiscardTile: Tile | null = null;
+    if (winMethod === 'discard' || winMethod === 'qiang_kang' || winMethod === 'di_hu') {
+      for (const tile of winningTiles) {
+        const key = tileKey(tile);
+        const count = remainingCounts.get(key) || 0;
+        if (count > 0) {
+          remainingCounts.set(key, count - 1);
+        } else {
+          winningDiscardTile = tile;
+          break;
+        }
+      }
+    }
     const result = calculateTai(
       summaryState,
       winner,
       selfDraw,
       false,
-      false,
+      winMethod === 'hua_shang',
       winMethod === 'kang_shang',
       undefined,
       winMethod === 'tian_hu',
@@ -114,25 +147,26 @@ export function Game() {
       reason: lastAction || 'Winning hand',
       totalTai: result.totalTai,
       breakdown: result.breakdown,
+      handTiles: winningTiles,
+      bonusTiles: winnerPlayer.bonusTiles || [],
+      winningDiscardTile,
+      winningTile: selfDraw ? lastDrawnTile : winningDiscardTile,
+      selfDraw,
     };
-  }, [phase, winner, winningTiles, players, wall, deadWall, currentPlayerIndex, roundWind, config, lastAction, discardHistory, moveHistory, diceResults, winMethod]);
+  }, [phase, winner, winningTiles, lastDrawnTile, players, wall, deadWall, currentPlayerIndex, roundWind, config, lastAction, discardHistory, moveHistory, diceResults, winMethod]);
 
-  // Track lastAction changes for move history (host only — join client receives via state_update)
-  useEffect(() => {
-    if (!isHost) return;
-    if (lastAction && lastAction !== lastActionRef.current) {
-      lastActionRef.current = lastAction;
-      useGameStore.setState({ moveHistory: [...useGameStore.getState().moveHistory, lastAction] });
-    }
-  }, [lastAction, isHost]);
+  const realPlayerCount = useMemo(() => players.filter(p => p.isHuman).length, [players]);
+  const readyCount = playAgainReady.filter(playerId => players.some(p => p.id === playerId && p.isHuman)).length;
+  const localReadyPlayerId = isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0);
+  const isLocalReady = playAgainReady.includes(localReadyPlayerId);
 
   // Reset history on new round
   useEffect(() => {
     if (phase === 'playing') {
-      useGameStore.setState({ moveHistory: [] });
-      lastActionRef.current = '';
       setShowWinPopup(true);
       setWinCountdown(30);
+      setWinPopupTimerEnabled(true);
+      useGameStore.setState({ nextRoundCountdown: null });
       setPlayAgainReady([]);
       readyRef.current = [];
       hasAutoAdvancedRef.current = false;
@@ -156,32 +190,60 @@ export function Game() {
 
   useEffect(() => {
     if (phase !== 'finished' || winner === null) return;
-    if (!showWinPopup && winCountdown <= 0) return;
+    if (!winPopupTimerEnabled || !showWinPopup) return;
     if (winCountdown <= 0) {
       setShowWinPopup(false);
+      setWinPopupTimerEnabled(false);
       return;
     }
     const t = setTimeout(() => setWinCountdown(c => c - 1), 1000);
     return () => clearTimeout(t);
-  }, [phase, winner, showWinPopup, winCountdown]);
+  }, [phase, winner, showWinPopup, winCountdown, winPopupTimerEnabled]);
 
   useEffect(() => {
-    if (!isHost || phase !== 'finished' || winner === null || hasAutoAdvancedRef.current) return;
+    const canAutoAdvance = !isMultiplayer || isHost;
+    if (!canAutoAdvance || phase !== 'finished' || winner === null || hasAutoAdvancedRef.current) return;
     const state = useGameStore.getState();
     const allReady = state.players.every((p: any) => !p.isHuman || readyRef.current.includes(p.id));
-    if (!allReady || readyRef.current.length === 0) return;
+    if (!allReady || readyRef.current.length === 0) {
+      if (nextRoundCountdown !== null) useGameStore.setState({ nextRoundCountdown: null });
+      return;
+    }
+
+    if (nextRoundCountdown === null) {
+      useGameStore.setState({ nextRoundCountdown: 5 });
+      return;
+    }
+
+    if (nextRoundCountdown > 0) {
+      const t = setTimeout(() => {
+        useGameStore.setState(s => ({
+          nextRoundCountdown: s.nextRoundCountdown === null ? null : Math.max(0, s.nextRoundCountdown - 1),
+        }));
+      }, 1000);
+      return () => clearTimeout(t);
+    }
 
     hasAutoAdvancedRef.current = true;
-    const t = setTimeout(() => {
-      useGameStore.getState().startGame(config);
-      readyRef.current = [];
-      setPlayAgainReady([]);
-      setShowWinPopup(true);
-      setWinCountdown(30);
-      hasAutoAdvancedRef.current = false;
-    }, 500);
-    return () => clearTimeout(t);
-  }, [playAgainReady, phase, winner, isHost, config]);
+    useGameStore.setState({ nextRoundCountdown: null });
+    useGameStore.getState().startGame(config);
+    readyRef.current = [];
+    setPlayAgainReady([]);
+    setShowWinPopup(true);
+    setWinCountdown(30);
+    setWinPopupTimerEnabled(true);
+    hasAutoAdvancedRef.current = false;
+  }, [playAgainReady, phase, winner, isHost, isMultiplayer, config, nextRoundCountdown]);
+
+  const closeWinPopup = () => {
+    setShowWinPopup(false);
+    setWinPopupTimerEnabled(false);
+  };
+
+  const reopenWinPopup = () => {
+    setShowWinPopup(true);
+    setWinPopupTimerEnabled(false);
+  };
 
   const handleQuit = () => {
     if (isMultiplayer) {
@@ -223,6 +285,17 @@ export function Game() {
       return next;
     });
   };
+
+  useEffect(() => {
+    if (phase !== 'finished' || winner === null) {
+      if (nextRoundCountdown !== null) useGameStore.setState({ nextRoundCountdown: null });
+      return;
+    }
+    const allReady = players.every((p: any) => !p.isHuman || playAgainReady.includes(p.id));
+    if (!allReady || playAgainReady.filter(playerId => players.some(p => p.id === playerId && p.isHuman)).length === 0) {
+      if (nextRoundCountdown !== null) useGameStore.setState({ nextRoundCountdown: null });
+    }
+  }, [phase, winner, players, playAgainReady, nextRoundCountdown]);
 
   // Host: when all real players ready, start new game
   useEffect(() => {
@@ -285,10 +358,12 @@ export function Game() {
 
       useGameStore.setState({
         isMultiplayer: true, isHost: true, myPlayerIndex: 0,
+        debugLogs: [],
         players: playerData, wall: remainingWall, deadWall: [],
         currentPlayerIndex: eastIdx, phase: 'playing', roundWind: s.roundWind || 'east',
         config: config || s.config,
         lastAction: `Game started! P${eastIdx} (East) discards first.`,
+        moveHistory: [`Game started! P${eastIdx} (East) discards first.`],
         winner: null, winningTiles: [], showConfig: false,
         message: s.players[0]?.name ? (s.players[0].name + ' (East) discards first.') : 'Game started!',
         diceResults: { dice: results.dice, totals: results.totals, eastPlayerIdx: results.eastPlayerIdx },
@@ -324,13 +399,85 @@ export function Game() {
         </button>
       </div>
       <div className="absolute top-3 right-3 z-10">
-        <button
-          onClick={() => setShowHistory(true)}
-          className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg font-bold text-sm transition-colors shadow-lg"
-        >
-          History
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowDebugLogs(true)}
+            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold text-sm transition-colors shadow-lg"
+          >
+            Dev Logs
+          </button>
+          <button
+            onClick={() => setShowHistory(true)}
+            className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg font-bold text-sm transition-colors shadow-lg"
+          >
+            History
+          </button>
+        </div>
       </div>
+      {showDebugLogs && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => setShowDebugLogs(false)}>
+          <div className="bg-slate-900 rounded-xl p-6 max-w-5xl w-full mx-4 border border-slate-700 max-h-[85vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3 gap-3">
+              <div>
+                <h2 className="text-xl font-bold text-white">Developer Logs</h2>
+                <p className="text-slate-400 text-xs mt-1">{debugLogs.length} entries, newest first</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={clearDebugLogs}
+                  className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold text-sm"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={() => setShowDebugLogs(false)}
+                  className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold text-sm"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1 space-y-2 pr-1">
+              {[...debugLogs].reverse().map((entry) => (
+                <details key={entry.id} className="rounded-lg border border-slate-700 bg-slate-800/80 p-2">
+                  {(() => {
+                    const reason = (entry.details as { reason?: string } | undefined)?.reason;
+                    return (
+                      <>
+                  <summary className="list-none cursor-pointer">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-slate-100 font-semibold text-xs leading-5">{entry.message}</div>
+                        <div className="text-slate-400 text-[10px]">{entry.type} | {entry.ts}</div>
+                      </div>
+                      <div className="text-slate-300 text-[10px] text-right shrink-0">
+                        <div>Wall: {entry.wallCount}</div>
+                        <div>Turn: P{entry.currentPlayerIndex}</div>
+                      </div>
+                    </div>
+                  </summary>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-[10px] text-slate-300">
+                    <div>Players: {entry.snapshot.players.length}</div>
+                    <div>Discards: {entry.snapshot.discardHistory.length}</div>
+                    {reason && <div className="col-span-2">Reason: {reason}</div>}
+                    {entry.snapshot.waitingForClaim?.tile && <div>Claim Tile: {entry.snapshot.waitingForClaim.tile}</div>}
+                    {entry.snapshot.waitingForClaim && <div>Eligible: {entry.snapshot.waitingForClaim.eligiblePlayers.map(p => `P${p.playerIndex}:${p.actions.join('/')}`).join(', ') || 'none'}</div>}
+                  </div>
+                  <pre className="mt-2 text-[10px] leading-4 text-slate-200 whitespace-pre-wrap overflow-x-auto">
+{JSON.stringify(entry, null, 2)}
+                  </pre>
+                      </>
+                    );
+                  })()}
+                </details>
+              ))}
+              {debugLogs.length === 0 && (
+                <div className="text-slate-400 text-sm italic py-8 text-center">No developer logs yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {showHistory && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowHistory(false)}>
           <div className="bg-green-800 rounded-xl p-6 max-w-lg w-full mx-4 border border-green-600/50 max-h-[80vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -355,26 +502,71 @@ export function Game() {
       {phase === 'finished' && winner !== null && winSummary && (
         <>
           {showWinPopup ? (
-            <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 px-4" onClick={() => setShowWinPopup(false)}>
+            <div className="fixed inset-0 bg-black/65 flex items-center justify-center z-50 px-4" onClick={closeWinPopup}>
               <div className="w-full max-w-xl bg-green-800/95 border border-green-600/60 rounded-2xl shadow-2xl p-6 max-h-[82vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div>
-                    <div className="text-yellow-300 text-xs uppercase tracking-[0.2em] mb-1">Round End</div>
-                    <h2 className="text-2xl font-bold text-white">{winSummary.headline}</h2>
-                    <div className="text-green-200 text-sm mt-1">{winSummary.name} wins</div>
-                  </div>
+                  <div className="text-yellow-300 text-xs uppercase tracking-[0.2em] mb-1">Round End</div>
+                  <h2 className="text-2xl font-bold text-white">{winSummary.headline}</h2>
+                </div>
                   <button
-                    onClick={() => setShowWinPopup(false)}
+                    onClick={closeWinPopup}
                     className="text-green-200 hover:text-white text-sm px-3 py-1 rounded-md bg-green-700/60"
                   >
                     Close
                   </button>
                 </div>
                 <p className="text-green-100 text-sm mb-4">{winSummary.reason}</p>
+                <div className="space-y-3 mb-4">
+                  <div>
+                    <div className="text-yellow-300 text-xs font-bold mb-1">Winning Hand</div>
+                    <div className="flex flex-wrap gap-1 rounded-lg bg-green-700/35 p-2">
+                      {winSummary.handTiles.map((tile, i) => (
+                        <MahjongTile key={`hand-${i}`} tile={tile} size="md" />
+                      ))}
+                    </div>
+                  </div>
+                  {players[winner]?.melds?.length > 0 && (
+                    <div>
+                      <div className="text-yellow-300 text-xs font-bold mb-1">Melds</div>
+                      <div className="flex flex-wrap gap-2 rounded-lg bg-green-700/35 p-2">
+                        {players[winner].melds.map((meld, i) => (
+                          <MeldDisplay key={`meld-${i}`} tiles={meld.tiles} type={meld.type} size="sm" />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {winSummary.bonusTiles.length > 0 && (
+                    <div>
+                      <div className="text-yellow-300 text-xs font-bold mb-1">Bonus Tiles</div>
+                      <div className="flex flex-wrap gap-1 rounded-lg bg-green-700/35 p-2">
+                        {winSummary.bonusTiles.map((tile, i) => (
+                          <MahjongTile key={`bonus-${i}`} tile={tile} size="md" />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {winSummary.winningDiscardTile && (
+                    <div>
+                      <div className="text-yellow-300 text-xs font-bold mb-1">Winning Discard</div>
+                      <div className="flex flex-wrap gap-1 rounded-lg bg-green-700/35 p-2">
+                        <MahjongTile tile={winSummary.winningDiscardTile} size="md" highlight />
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className="text-center mb-4">
                   <div className="text-5xl font-bold text-yellow-300">{winSummary.totalTai}</div>
                   <div className="text-green-200 text-sm mt-1">tai total</div>
                 </div>
+                {winSummary.winningTile && (
+                  <div className="mb-4">
+                    <div className="text-yellow-300 text-xs font-bold mb-1">{winSummary.selfDraw ? 'Winning Draw' : 'Winning Tile'}</div>
+                    <div className="flex flex-wrap justify-center gap-1 rounded-lg bg-green-700/35 p-2">
+                      <MahjongTile tile={winSummary.winningTile} size="md" highlight />
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-1 mb-4">
                   {winSummary.breakdown.map((item, i) => (
                     <div key={i} className="flex items-center justify-between text-sm bg-green-700/40 rounded-lg px-3 py-2">
@@ -384,26 +576,41 @@ export function Game() {
                   ))}
                 </div>
                 <div className="flex items-center justify-between text-xs text-green-200/80">
-                  <span>Auto closes in {winCountdown}s</span>
-                  <span>{playAgainReady.length} ready</span>
+                  <span>
+                    {nextRoundCountdown !== null
+                      ? `Next round starts in ${nextRoundCountdown}s`
+                      : winPopupTimerEnabled
+                        ? `Auto closes in ${winCountdown}s`
+                        : 'Result popup reopened'}
+                  </span>
+                  <span>{readyCount}/{realPlayerCount} ready</span>
                 </div>
               </div>
             </div>
           ) : (
             <div className="fixed inset-0 z-50 pointer-events-none flex items-center justify-center">
-              <div className="pointer-events-auto bg-green-800/90 border border-green-600/60 rounded-2xl shadow-2xl p-4 flex items-center gap-3">
-                <button
-                  onClick={() => setShowWinPopup(true)}
-                  className="px-4 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 text-white font-bold text-sm"
-                >
-                  Show Result
-                </button>
-                <button
-                  onClick={toggleReady}
-                  className={`px-4 py-2 rounded-lg font-bold text-sm ${playAgainReady.includes(isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0)) ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}`}
-                >
-                  {playAgainReady.includes(isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0)) ? '✓ Ready' : 'Ready'}
-                </button>
+              <div className="pointer-events-auto flex flex-col items-center gap-3">
+                <div className="bg-green-800/90 border border-green-600/60 rounded-2xl shadow-2xl p-4 flex items-center gap-3">
+                  <button
+                    onClick={reopenWinPopup}
+                    className="px-4 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 text-white font-bold text-sm"
+                  >
+                    Show Result
+                  </button>
+                  <button
+                    onClick={toggleReady}
+                    className={`px-4 py-2 rounded-lg font-bold text-sm ${isLocalReady ? 'bg-green-600 text-white' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}`}
+                  >
+                    {isLocalReady ? `✓ Ready (${readyCount}/${realPlayerCount})` : `Ready (${readyCount}/${realPlayerCount})`}
+                  </button>
+                </div>
+                {nextRoundCountdown !== null && (
+                  <div className="rounded-2xl border-2 border-yellow-400 bg-green-950/95 px-6 py-3 shadow-2xl animate-pulse text-center min-w-[220px]">
+                    <div className="text-yellow-300 text-xs uppercase tracking-[0.25em] mb-1">Next Round Starting</div>
+                    <div className="text-white font-black text-4xl leading-none">{nextRoundCountdown}s</div>
+                    <div className="text-green-200 text-xs mt-1">everyone ready</div>
+                  </div>
+                )}
               </div>
             </div>
           )}

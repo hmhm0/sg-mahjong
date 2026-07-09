@@ -4,8 +4,8 @@ import { isFei, isHonor, sortHand } from './tiles';
 
 // ── Win Detection ──────────────────────────────────────────
 // Single-pass recursive backtracking engine.
-// Correctly handles fei (joker) substitutions in sequences,
-// all pair/meld combinations, and mixed sequence+pung hands.
+// Correctly handles fei (joker) substitutions across winning hand formation:
+// sequences, pungs/kongs, pair completion, and mixed hands.
 
 function tileEqual(a: Tile, b: Tile, allowFei = false): boolean {
   if (a.category === 'fei' && allowFei) return true;
@@ -33,6 +33,24 @@ function getTileKey(tile: Tile): string | null {
   if (tile.category === 'suit') return `suit:${tile.suit}:${tile.value}`;
   if (tile.category === 'honor') return `honor:${tile.type}`;
   return null;
+}
+
+function tileFromKey(key: string): Tile {
+  const parts = key.split(':');
+  if (parts[0] === 'suit' && parts.length === 3) {
+    return {
+      category: 'suit',
+      suit: parts[1] as Suit,
+      value: Number(parts[2]) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+    };
+  }
+  if (parts[0] === 'honor' && parts.length === 2) {
+    return {
+      category: 'honor',
+      type: parts[1] as Wind | Dragon,
+    };
+  }
+  throw new Error(`Unsupported tile key: ${key}`);
 }
 
 function buildPool(hand: Tile[]): { counts: Record<string, number>; fei: number; total: number } {
@@ -148,11 +166,7 @@ function canCompleteMelds(
     return ok;
   }
 
-  const [prefix, , suitOrType, valueOrType] = anchorKey.split(':');
-  const anchorTile: Tile =
-    prefix === 'suit'
-      ? { category: 'suit', suit: suitOrType as Suit, value: Number(valueOrType) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }
-      : { category: 'honor', type: suitOrType as Wind | Dragon };
+  const anchorTile = tileFromKey(anchorKey);
 
   if (mode !== 'pungs' && anchorTile.category === 'suit') {
     for (let start = Math.max(1, anchorTile.value - 2); start <= Math.min(7, anchorTile.value); start++) {
@@ -237,6 +251,12 @@ function findMelds(hand: Tile[], count: number): Tile[][] | null {
   const nonFei = hand.filter(t => !isFei(t));
   const feiCount = hand.filter(isFei).length;
 
+  if (nonFei.length === 0) {
+    return hand.length === count * 3
+      ? Array.from({ length: count }, (_, i) => hand.slice(i * 3, i * 3 + 3))
+      : null;
+  }
+
   const first = hand.find(t => !isFei(t))!;
 
   // ── Sequence (suit tiles only, with 0-3 fei subs) ──
@@ -258,11 +278,16 @@ function findMelds(hand: Tile[], count: number): Tile[][] | null {
 
   // ── Pung (3 identical non-fei tiles) ──
   const identical = nonFei.filter(t => tileEqual(t, first));
-  if (identical.length >= 3) {
-    const pung = identical.slice(0, 3);
-    const remaining = removeTiles(hand, pung);
-    const rest = findMelds(remaining, count - 1);
-    if (rest !== null) return [pung, ...rest];
+  if (identical.length > 0 || feiCount > 0) {
+    for (let useNatural = Math.min(3, identical.length); useNatural >= 1; useNatural--) {
+      const useFei = 3 - useNatural;
+      if (useFei > feiCount) continue;
+      const pung = [...identical.slice(0, useNatural), ...hand.filter(isFei).slice(0, useFei)];
+      if (pung.length !== 3) continue;
+      const remaining = removeTiles(hand, pung);
+      const rest = findMelds(remaining, count - 1);
+      if (rest !== null) return [pung, ...rest];
+    }
   }
 
   return null;
@@ -311,7 +336,17 @@ function collectSeqRecur(
 function hasPair(hand: Tile[]): Tile[] | null {
   const playableHand = hand.filter(t => t.category !== 'bonus');
   const pool = buildPool(playableHand);
+  const pairCandidates = getPairCandidates(playableHand, pool);
 
+  for (const pair of pairCandidates) {
+    const remaining = removeTiles(playableHand, pair);
+    if (canCompleteHand(remaining, 0, 'mixed')) return pair;
+  }
+
+  return null;
+}
+
+function getPairCandidates(playableHand: Tile[], pool = buildPool(playableHand)): Tile[][] {
   const pairCandidates: Tile[][] = [];
 
   const feiTiles = playableHand.filter(isFei);
@@ -320,11 +355,7 @@ function hasPair(hand: Tile[]): Tile[] | null {
   }
 
   for (const key of Object.keys(pool.counts).sort()) {
-    const [prefix, , suitOrType, valueOrType] = key.split(':');
-    const tile: Tile =
-      prefix === 'suit'
-        ? { category: 'suit', suit: suitOrType as Suit, value: Number(valueOrType) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }
-        : { category: 'honor', type: suitOrType as Wind | Dragon };
+    const tile = tileFromKey(key);
 
     if ((pool.counts[key] || 0) >= 2) {
       pairCandidates.push([tile, tile]);
@@ -334,12 +365,59 @@ function hasPair(hand: Tile[]): Tile[] | null {
     }
   }
 
-  for (const pair of pairCandidates) {
+  return pairCandidates;
+}
+
+function inferCompleteMelds(playableHand: Tile[], exposedMeldCount: number): Tile[][] | null {
+  const pool = buildPool(playableHand);
+  const remainingMelds = 4 - exposedMeldCount;
+  if (remainingMelds < 0) return null;
+  if (pool.total !== remainingMelds * 3 + 2) return null;
+
+  for (const pair of getPairCandidates(playableHand, pool)) {
     const remaining = removeTiles(playableHand, pair);
-    if (canCompleteHand(remaining, 0, 'mixed')) return pair;
+    const melds = findMelds(remaining, remainingMelds);
+    if (melds !== null) return melds;
   }
 
   return null;
+}
+
+function meldCanRepresentHonorPung(tiles: Tile[], honorType: Wind | Dragon): boolean {
+  if (tiles.length < 3 || tiles.length > 4) return false;
+  const naturalTiles = tiles.filter(t => !isFei(t));
+  if (naturalTiles.length === 0) return false;
+  return naturalTiles.every(t => t.category === 'honor' && t.type === honorType);
+}
+
+function collectHonorPungBonuses(
+  meldSources: Tile[][],
+  player: Player,
+  roundWind: Wind,
+): { tai: number; breakdown: { name: string; tai: number }[] } {
+  let tai = 0;
+  const breakdown: { name: string; tai: number }[] = [];
+  const seen = new Set<string>();
+
+  for (const tiles of meldSources) {
+    for (const honor of [player.seatWind, roundWind, 'hong', 'fa', 'baak'] as (Wind | Dragon)[]) {
+      const bonusKey = `${honor}:${tiles.map(t => getTileKey(t) || 'fei').join(',')}`;
+      if (seen.has(bonusKey)) continue;
+      if (!meldCanRepresentHonorPung(tiles, honor)) continue;
+
+      const label =
+        honor === player.seatWind
+          ? `Seat Wind (${player.seatWind}) Pung`
+          : honor === roundWind
+            ? `Round Wind (${roundWind}) Pung`
+            : `${honor} Dragon Pung`;
+      tai += 1;
+      breakdown.push({ name: label, tai: 1 });
+      seen.add(bonusKey);
+    }
+  }
+
+  return { tai, breakdown };
 }
 
 export function checkWin(hand: Tile[], melds: Meld[]): boolean {
@@ -522,9 +600,9 @@ function isKangKangHu(hand: Tile[], melds: Meld[], selfDraw: boolean): boolean {
 // All tiles are honor tiles (winds + dragons), all 4 melds are pungs/kongs,
 // must win with the eyes. Works for both exposed and concealed melds.
 function isPureHonours(hand: Tile[], melds: Meld[], winningTile?: Tile): boolean {
-  // All tiles (melds + hand) must be honor tiles
-  const allTiles = [...hand, ...melds.flatMap(m => m.tiles)];
-  for (const t of allTiles) {
+  // Non-fei tiles must all be honor tiles; fei can stand in for missing honors.
+  const nonFeiTiles = [...hand, ...melds.flatMap(m => m.tiles)].filter(t => !isFei(t));
+  for (const t of nonFeiTiles) {
     if (t.category !== 'honor') return false;
   }
 
@@ -557,9 +635,21 @@ export function isThirteenWonders(hand: Tile[], melds: Meld[]): boolean {
   const playableHand = hand.filter(t => t.category !== 'bonus');
   if (playableHand.length !== 14) return false;
 
-  // Count occurrences of each terminal (1/9) and honor tile
+  const expectedTypes = [
+    'bamboo-1', 'bamboo-9',
+    'characters-1', 'characters-9',
+    'dots-1', 'dots-9',
+    'honor-east', 'honor-south', 'honor-west', 'honor-north',
+    'honor-hong', 'honor-fa', 'honor-baak'
+  ] as const;
+
   const counts: Record<string, number> = {};
+  let feiCount = 0;
   for (const t of playableHand) {
+    if (isFei(t)) {
+      feiCount++;
+      continue;
+    }
     if (t.category === 'suit') {
       if (t.value !== 1 && t.value !== 9) return false;
       counts[`${t.suit}-${t.value}`] = (counts[`${t.suit}-${t.value}`] || 0) + 1;
@@ -570,30 +660,17 @@ export function isThirteenWonders(hand: Tile[], melds: Meld[]): boolean {
     }
   }
 
-  // All 13 terminal/honor types must be present
-  const expectedTypes = [
-    'bamboo-1', 'bamboo-9',
-    'characters-1', 'characters-9',
-    'dots-1', 'dots-9',
-    'honor-east', 'honor-south', 'honor-west', 'honor-north',
-    'honor-hong', 'honor-fa', 'honor-baak'
-  ];
-  for (const expected of expectedTypes) {
-    if (!counts[expected] || counts[expected] < 1) return false;
-  }
-
-  // Exactly one type appears twice (the pair), rest once
-  let hasPair = false;
-  for (const key of Object.keys(counts)) {
-    if (counts[key] === 2) {
-      if (hasPair) return false;
-      hasPair = true;
-    } else if (counts[key] !== 1) {
-      return false;
+  for (const pairType of expectedTypes) {
+    let requiredFei = 0;
+    for (const expected of expectedTypes) {
+      const required = expected === pairType ? 2 : 1;
+      const actual = counts[expected] || 0;
+      if (actual > required) return false;
+      requiredFei += required - actual;
     }
+    if (requiredFei <= feiCount) return true;
   }
-
-  return hasPair;
+  return false;
 }
 
 // ── Tai Scoring ──────────────────────────────────────────
@@ -644,6 +721,7 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
   const hand = winningTile ? [...player.hand, winningTile] : player.hand;
   const melds = player.melds;
   const allTiles = [...hand, ...melds.flatMap(m => m.tiles)];
+  const playableHand = hand.filter(t => t.category !== 'bonus');
   const suitCounts: Record<string, number> = { bamboo: 0, characters: 0, dots: 0 };
   const honorCount = allTiles.filter(t => t.category === 'honor').length;
   const feiCount = allTiles.filter(isFei).length;
@@ -657,26 +735,14 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
 
   const nonHonorCount = allTiles.filter(t => t.category === 'suit').length;
 
-  // Seat wind pung
-  for (const meld of melds) {
-    if ((meld.type === 'pung' || meld.type === 'kong' || meld.type === 'concealed-kong')) {
-      const first = meld.tiles[0];
-      if (first.category === 'honor' && first.type === player.seatWind) {
-        tai += 1;
-        breakdown.push({ name: `Seat Wind (${player.seatWind}) Pung`, tai: 1 });
-      }
-      // Round wind pung
-      if (first.category === 'honor' && first.type === state.roundWind) {
-        tai += 1;
-        breakdown.push({ name: `Round Wind (${state.roundWind}) Pung`, tai: 1 });
-      }
-      // Dragon pung
-      if (first.category === 'honor' && ['hong', 'fa', 'baak'].includes(first.type)) {
-        tai += 1;
-        breakdown.push({ name: `${first.type} Dragon Pung`, tai: 1 });
-      }
-    }
-  }
+  const exposedHonorMelds = melds
+    .filter(m => m.type === 'pung' || m.type === 'kong' || m.type === 'concealed-kong')
+    .map(m => m.tiles);
+  const inferredMelds = !visibleOnly ? inferCompleteMelds(playableHand, melds.length) || [] : [];
+  const scoringMeldSources = [...exposedHonorMelds, ...inferredMelds];
+  const honorBonus = collectHonorPungBonuses(scoringMeldSources, player, state.roundWind);
+  tai += honorBonus.tai;
+  breakdown.push(...honorBonus.breakdown);
 
   // Full Flush variants skip flag — must be at function scope
   let fullFlushVariantApplied = false;
@@ -1058,4 +1124,15 @@ export function findTilesThatWin(hand: Tile[], melds: Meld[]): Tile[] {
   }
 
   return winners;
+}
+
+export function isBlockedDiscardWinByFullSuitWait(hand: Tile[], melds: Meld[], discard: Tile): boolean {
+  if (discard.category !== 'suit') return false;
+
+  const winners = findTilesThatWin(hand, melds);
+  const suitWins = winners.filter(
+    tile => tile.category === 'suit' && tile.suit === discard.suit,
+  );
+
+  return suitWins.length === 9;
 }

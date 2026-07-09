@@ -5,6 +5,50 @@ Update this file whenever a meaningful change is made to the codebase.
 
 ---
 
+## [2026-07-09] — Phase: SEO & Crawlability
+
+### Changed
+
+- **Route-aware SEO shell**: Upgraded the app head management to set route-specific titles, descriptions, keywords, canonical URL, robots directives, Open Graph tags, Twitter card tags, and JSON-LD structured data.
+- **Public crawl files**: Added `robots.txt` and `sitemap.xml` for the public site.
+- **Social preview asset**: Added a dedicated `og-image.svg` for link previews and search/social sharing.
+- **Real page paths**: Switched the public navigation links to path-based URLs so the tutorial, rules, host, and join pages can be indexed as actual site pages instead of hash fragments.
+- **Public copy**: Added more Singapore Mahjong keyword-rich explanatory text to the home, rules, and tutorial surfaces without changing the gameplay flow.
+- **README refresh**: Updated the README to reflect the SEO-oriented public pages and corrected the clone path.
+
+---
+
+## [2026-07-09] — Phase: Prerender + SPA Hosting Fallback
+
+### Added
+
+- **Prerender script**: Added a post-build prerender step that writes static HTML snapshots for the public `/rules/` and `/tutorial/` routes, plus noindex snapshots for temporary host/join pages.
+- **Host rewrites**: Added Netlify and Vercel fallback configs so unmatched routes resolve to `index.html` in production.
+- **Temporary page indexing control**: Host/join pages are now treated as `noindex` surfaces so they do not compete in search results.
+
+## [2026-07-09] — Phase: Host/Join Transition + Multiplayer Reconnect
+
+### Changed
+
+- **In-app navigation**: Replaced the host/join menu redirects with internal navigation so opening Host Game, Join Game, Rules, or Tutorial no longer forces a full page reload.
+- **Loading overlay**: Added a small transition overlay on the main menu when opening another page so the switch feels deliberate instead of abrupt.
+- **Reconnect handling**: The WebSocket client now auto-rejoins the same room after a transient disconnect when the room code and player index are still known.
+- **Disconnect cleanup**: Manual disconnects now cancel reconnect timers cleanly and clear the room/session state without leaving stale listeners behind.
+- **Rules FAQ**: Added a short public FAQ section covering Fei, win conditions, and why temporary multiplayer pages stay out of search results.
+- **App manifest**: Added a public web manifest and app metadata for a more finished installable-app surface.
+
+## [2026-07-09] — Phase: Free Analytics + Search Console
+
+### Added
+
+- **PostHog wiring**: Added a lightweight analytics helper that uses PostHog only when `VITE_POSTHOG_KEY` is present, and tracks page views plus key host/join/menu events.
+- **Search Console verification**: Added build-time support for `VITE_GOOGLE_SITE_VERIFICATION` so Google Search Console can verify the public site via HTML tag.
+- **Environment template**: Added `.env.example` for PostHog and Search Console variables.
+
+
+
+---
+
 ## [2026-07-09 00:00 SGT] — Phase: Automatic Win Flow & Winner Popup
 
 ### Changed
@@ -12,10 +56,24 @@ Update this file whenever a meaningful change is made to the codebase.
 - **Automatic win gate**: `Big Three Dragons` and `Da Xi Si` now bypass the tai-threshold checks anywhere the game decides whether a discard win or self-draw win is allowed.
 - **Winner popup headline**: The end-of-round popup now shows the named winning hand first when a recognized pattern is present, instead of always using a generic `<player> wins` headline.
 - **Xiao Xi Si**: Corrected from `40 tai` to `4 tai` in the scoring engine and rules text.
+- **Developer logs**: Added an in-game `Dev Logs` viewer with full per-player snapshots for draws, discards, claim windows, claim resolutions, and win evaluations. Logs now reset at the start of each new round.
 
 ### Fixed
 
 - **Rules/UI mismatch**: `Four Little Winds` and `Four Great Winds` labels in the rules page now match the active ruleset.
+- **Fei-backed discard win detection**: Fixed a tile-key parsing bug in the wildcard solver that caused valid discard wins like `7-8-9` plus Fei-completed honor pungs to be missed.
+- **Live tai counter leakage**: The in-game tai counter now shows visible tai only for every seat, instead of projecting hidden hand patterns like `Half Flush` during play.
+- **Winner popup details**: The round-end popup now shows the winning hand tiles, the winner's bonus tiles, and the winning discard tile when applicable. Reopening `Show Result` now opens a no-timer version of the popup, and the duplicate `Game Over! Winner:` footer was removed.
+- **History and debug trace**: Move History is now written directly from game-state actions instead of relying on a `lastAction` watcher, so discards and claims do not get skipped. Dev Logs are now compact collapsed entries with a quick summary and expandable JSON.
+- **Empty room timeout**: Rooms now self-destruct after 10 minutes with no joined players. Joining/rejoining clears the timer, and starting a game disables the idle expiry for that room.
+- **Win debug reasons**: Dev Logs now include a short reason when a player cannot win or when a win is blocked by the tai threshold. The round-end popup also shows the winner's melds separately from bonus tiles and hand tiles.
+- **Main menu chips/shooter config**: Added `Starting Chips` and `Shooter` settings to the main menu so the values travel with the game config for both single-player and multiplayer setup.
+- **Economy off switch**: Leaving `Starting Chips` blank now disables economy mode entirely, so future chip and payout logic can remain inactive unless the host explicitly enables it.
+- **Chip settlement mode**: The shooter toggle now also sets an explicit `default` vs `shooter` chip settlement mode in config, so payout logic can branch later without guessing from UI state.
+- **Public disclaimer footer**: Added an on-page disclaimer and copyright notice to the main menu footer for the public build.
+- **Public disclaimer coverage**: Added the same disclaimer to the Rules Reference and Tutorial pages, and moved the copyright line to `sgmahjong.app`.
+- **Singapore Mahjong branding**: Refreshed the menu, Rules Reference, and Tutorial surfaces to use a more distinctly Singapore Mahjong visual tone and title hierarchy.
+- **SEO basics**: Added default head metadata plus route-aware document titles and descriptions for the menu, rules, tutorial, host, join, and live game pages.
 
 ---
 
@@ -274,3 +332,12 @@ This is a straightforward modification to `GameTable.tsx` — add the import and
 - `dealerCount` and `roundWind` preserved through `reset()` so round tracking persists across consecutive games.
 - End-of-game condition: Game stops after North round completes (all 4 players have been dealer in North).
 - Self-kong, concealed kong, and pass-self-kong actions properly routed via WebSocket for multiplayer join clients.
+
+## [2026-07-09] — Phase: Scoring and Dealer Badge Fix
+
+### Fixed
+
+- **Fei-backed honor pungs/kongs now score correctly**: wind and dragon pung bonuses now recognize Fei substitutions in the completed hand, including concealed melds inferred during final scoring.
+- **Visible tai preview stays clean**: concealed meld inference is only used for the actual win result, not the opponent-facing visible tai display.
+- **Round restart no longer reassigns seat winds**: `startGame()` now preserves the existing player seat ordering between rounds and only advances the dealer/current turn flow.
+- **Tian Hu round state**: opening-hand scoring now uses the active round wind state instead of hardcoding East.

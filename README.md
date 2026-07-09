@@ -4,6 +4,8 @@ A full-featured **Singapore Mahjong** game with single-player (vs 3 AI) and mult
 
 > **⚠️ Disclaimer:** This project is created **for entertainment and educational purposes only**. It is **not intended for gambling or real-money play**. All mahjong tile images are sourced from publicly available assets and are not owned by the author.
 
+Copyright &copy; 2026 sgmahjong.app. All rights reserved.
+
 ---
 
 ## ✨ Features
@@ -21,6 +23,12 @@ A full-featured **Singapore Mahjong** game with single-player (vs 3 AI) and mult
 - **Round wind rotation** — East → South → West → North, game ends after North
 - **AFK warning** — detects player inactivity (>5 min), displays warning to all
 - **Move history** — scrollable popup tracking every action per round
+- **Developer logs** — in-game trace of hands, bonus tiles, discards, and win-evaluation snapshots for debugging
+- **SEO-ready pages** — route-specific titles, descriptions, canonical tags, structured data, robots.txt, sitemap.xml, and social preview metadata
+- **Prerendered public pages** — the build writes static HTML snapshots for `/rules/` and `/tutorial/`, while temporary room pages stay `noindex`
+- **Clean host/join flow** — in-app navigation opens Host/Join without a full reload, and multiplayer reconnects can rejoin the same room after a transient disconnect
+- **App manifest** — includes a web manifest and app metadata so the site behaves more like a finished installable app
+- **Free analytics** — PostHog is wired behind environment variables, with Google Search Console verification support via build-time env injection
 
 ## 🖼️ Screenshots
 
@@ -46,7 +54,7 @@ A full-featured **Singapore Mahjong** game with single-player (vs 3 AI) and mult
 ```bash
 # Clone the repo
 git clone https://github.com/hmhm0/sg-mahjong.git
-cd singapore-mahjong
+cd sg-mahjong
 
 # Install dependencies
 npm install
@@ -59,6 +67,18 @@ npm run dev
 npm run build
 # → Output in dist/
 ```
+
+### Environment Variables
+
+Create a local `.env` file from `.env.example` when you want analytics or Search Console verification:
+
+```bash
+VITE_POSTHOG_KEY=your_posthog_project_key
+VITE_POSTHOG_HOST=https://us.i.posthog.com
+VITE_GOOGLE_SITE_VERIFICATION=your_google_verification_token
+```
+
+If these are left blank, the app still runs normally and analytics stays disabled.
 
 ### macOS
 
@@ -125,7 +145,25 @@ npx vite
 | All Pungs | 3 |
 | +1 patterns | Seat/Round Wind Pung, Dragon Pung, Self-Draw, Concealed Hand, Chou Ping Hu, Hua Shang, Kang Shang, Dragon Eyes, Flowers/Seasons/Animals |
 
-See the full rules reference in-game at `/#/rules`.
+See the full rules reference in-game at `/rules`.
+
+---
+
+## 🔎 Search Visibility
+
+The public site is structured to be easy to discover for searches such as:
+
+- Singapore Mahjong
+- Singapore Mahjong rules
+- Fei joker Mahjong
+- Mahjong tai scoring
+- Online Singapore Mahjong game
+
+The home page, tutorial page, and rules reference each expose their own page titles and descriptions, with crawl files, static prerendered HTML, and social preview metadata included for search engines and link previews. Host and join room pages are marked `noindex` because they are temporary multiplayer surfaces.
+
+### Hosting Notes
+
+When deploying, make sure the host serves `/index.html` as the SPA fallback for unmatched routes. The repo also includes Netlify and Vercel fallback configs so the public routes keep working after publish.
 
 ---
 
@@ -155,7 +193,7 @@ See the full rules reference in-game at `/#/rules`.
 │   │   └── JoinGame.tsx       # Multiplayer join (WIP)
 │   ├── utils/
 │   │   └── connection.ts      # WebSocket client (WIP)
-│   ├── App.tsx                # Root component + hash routing
+│   ├── App.tsx                # Root component + route handling
 │   └── main.tsx               # Entry point
 ├── public/tiles/              # 48 SVG tile images
 │   ├── bamboo-1.svg – bamboo-9.svg

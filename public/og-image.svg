@@ -1,0 +1,28 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Singapore Mahjong</title>
+  <desc id="desc">Singapore Mahjong web game with Fei jokers, tai scoring, and multiplayer rooms.</desc>
+  <rect width="1200" height="630" rx="48" fill="#0B2F24"/>
+  <rect x="40" y="40" width="1120" height="550" rx="40" fill="#0F3D2E" stroke="#EAB308" stroke-opacity="0.28" stroke-width="2"/>
+  <circle cx="1045" cy="138" r="94" fill="#EAB308" fill-opacity="0.10"/>
+  <circle cx="150" cy="502" r="118" fill="#22C55E" fill-opacity="0.08"/>
+
+  <g transform="translate(86 118)">
+    <rect x="0" y="0" width="128" height="182" rx="20" fill="#F8F5E9" stroke="#D4AF37" stroke-width="4"/>
+    <text x="64" y="78" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700" fill="#0B2F24">Fei</text>
+    <text x="64" y="120" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#0B2F24">Joker</text>
+  </g>
+  <g transform="translate(246 138)">
+    <rect x="0" y="0" width="128" height="182" rx="20" fill="#F8F5E9" stroke="#EAB308" stroke-width="4" transform="rotate(-7 64 91)"/>
+    <text x="64" y="78" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" fill="#0B2F24">Tai</text>
+    <text x="64" y="120" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#0B2F24">Scoring</text>
+  </g>
+  <g transform="translate(406 118)">
+    <rect x="0" y="0" width="128" height="182" rx="20" fill="#F8F5E9" stroke="#D4AF37" stroke-width="4" transform="rotate(6 64 91)"/>
+    <text x="64" y="78" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#0B2F24">Room</text>
+    <text x="64" y="120" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#0B2F24">Multiplayer</text>
+  </g>
+
+  <text x="600" y="386" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="66" font-weight="800" fill="#FDE68A">Singapore Mahjong</text>
+  <text x="600" y="438" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="30" fill="#D1FAE5">Fei jokers, tai scoring, single-player bots, and multiplayer rooms</text>
+  <text x="600" y="482" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#A7F3D0">Play the Singapore ruleset in your browser</text>
+</svg>

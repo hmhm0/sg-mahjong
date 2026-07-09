@@ -43,18 +43,30 @@ const TUTORIAL_STEPS = [
 
 export function Tutorial() {
   return (
-    <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 p-4">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(234,179,8,0.08),_transparent_30%),linear-gradient(180deg,_#0f3d2e_0%,_#09261d_100%)] p-4">
       <div className="max-w-2xl mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl md:text-3xl font-bold text-yellow-300">
-            How to Play
-          </h1>
-          <a href="#/" className="text-green-400 hover:text-green-200 underline text-sm">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.25em] text-yellow-200/80 mb-1">Singapore Mahjong</div>
+            <h1 className="text-2xl md:text-3xl font-black text-yellow-200">
+              How to Play
+            </h1>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-green-200/80">
+              Learn the Singapore Mahjong flow from dealing and calling tiles to Fei usage, tai scoring, wind rotation, and winning hands.
+            </p>
+          </div>
+          <button type="button" onClick={() => navigate('/')} className="text-green-200 hover:text-white underline text-sm">
             Back to Menu
-          </a>
+          </button>
         </div>
 
         <div className="space-y-4">
+          <div className="bg-green-800/40 backdrop-blur rounded-xl p-4 border border-green-700/30">
+            <h2 className="text-lg font-bold text-yellow-300 mb-2">Disclaimer</h2>
+            <p className="text-green-200/80 text-sm leading-relaxed">This website is for entertainment and educational purposes only. It is not intended for gambling or real-money play.</p>
+            <p className="text-green-200/80 text-sm leading-relaxed mt-2">Mahjong tile images are sourced from publicly available assets and are not owned by the author.</p>
+            <p className="text-green-200/80 text-sm leading-relaxed mt-2">Copyright &copy; 2026 sgmahjong.app. All rights reserved.</p>
+          </div>
           {TUTORIAL_STEPS.map((step, i) => (
             <div key={i} className="bg-green-800/40 backdrop-blur rounded-xl p-4 border border-green-700/30">
               <h2 className="text-lg font-bold text-green-100 mb-2">
@@ -68,11 +80,12 @@ export function Tutorial() {
         </div>
 
         <div className="mt-6 text-center">
-          <a href="#/" className="text-green-400 hover:text-green-200 underline text-sm">
+          <button type="button" onClick={() => navigate('/')} className="text-green-400 hover:text-green-200 underline text-sm">
             Back to Menu
-          </a>
+          </button>
         </div>
       </div>
     </div>
   );
 }
+import { navigate } from '../utils/navigation';

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { navigate } from '../utils/navigation';
 
 function Section({ title, icon, children }: { title: string; icon: string; children: ReactNode }) {
   return (
@@ -14,18 +15,29 @@ function Section({ title, icon, children }: { title: string; icon: string; child
 
 export function Rules() {
   return (
-    <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 p-4">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(234,179,8,0.08),_transparent_30%),linear-gradient(180deg,_#0f3d2e_0%,_#09261d_100%)] p-4">
       <div className="max-w-2xl mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl md:text-3xl font-bold text-yellow-300">
-            Rules Reference
-          </h1>
-          <a href="#/" className="text-green-400 hover:text-green-200 underline text-sm">
+          <div>
+            <div className="text-[11px] uppercase tracking-[0.25em] text-yellow-200/80 mb-1">Singapore Mahjong</div>
+            <h1 className="text-2xl md:text-3xl font-black text-yellow-200">
+              Rules Reference
+            </h1>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-green-200/80">
+              Full Singapore Mahjong rules for Fei jokers, tai scoring, call priority, special hands, dealer rotation, and win conditions.
+            </p>
+          </div>
+          <button type="button" onClick={() => navigate('/')} className="text-green-200 hover:text-white underline text-sm">
             Back to Menu
-          </a>
+          </button>
         </div>
 
         <div className="space-y-4">
+          <Section title="Disclaimer" icon="⚠️">
+            <p>This website is for entertainment and educational purposes only. It is not intended for gambling or real-money play.</p>
+            <p>Mahjong tile images are sourced from publicly available assets and are not owned by the author.</p>
+            <p>Copyright &copy; 2026 sgmahjong.app. All rights reserved.</p>
+          </Section>
 
           <Section title="Tile Set" icon="🎴">
             <p>148 tiles total in a standard set before Fei:</p>
@@ -179,6 +191,23 @@ export function Rules() {
             </div>
           </Section>
 
+          <Section title="FAQ" icon="❓">
+            <div className="space-y-3 text-sm">
+              <div>
+                <p className="font-bold text-yellow-200">What is Fei in Singapore Mahjong?</p>
+                <p>Fei is a joker tile used to complete sequences, pungs, kongs, and the eyes. It is not a bonus tile and cannot be discarded.</p>
+              </div>
+              <div>
+                <p className="font-bold text-yellow-200">What makes a hand win?</p>
+                <p>A legal hand is normally 4 melds plus 1 pair, and it must meet the configured tai threshold unless the hand is a special automatic win.</p>
+              </div>
+              <div>
+                <p className="font-bold text-yellow-200">Why are Host and Join pages noindex?</p>
+                <p>They are temporary multiplayer surfaces, so they stay out of search results while the public game, rules, and tutorial pages remain indexable.</p>
+              </div>
+            </div>
+          </Section>
+
           <Section title="Glossary" icon="📖">
             <table className="w-full text-xs">
               <tbody>
@@ -208,9 +237,9 @@ export function Rules() {
         </div>
 
         <div className="mt-6 text-center">
-          <a href="#/" className="text-green-400 hover:text-green-200 underline text-sm">
+          <button type="button" onClick={() => navigate('/')} className="text-green-400 hover:text-green-200 underline text-sm">
             Back to Menu
-          </a>
+          </button>
         </div>
       </div>
     </div>

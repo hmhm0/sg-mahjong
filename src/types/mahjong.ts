@@ -52,6 +52,41 @@ export interface GameConfig {
   taiThreshold: number;
   unlimitedTai: boolean;
   feiCount: number; // 0, 4, 8, 12, 16, 20
+  startingChips: number | null;
+  shooterEnabled: boolean;
+  economyEnabled: boolean;
+  chipSettlementMode: 'default' | 'shooter';
+}
+
+export interface DebugPlayerSnapshot {
+  playerIndex: number;
+  name: string;
+  seatWind: Wind;
+  hand: string[];
+  bonusTiles: string[];
+  melds: { type: Meld['type']; tiles: string[]; fromPlayer: number | null }[];
+  discards: string[];
+}
+
+export interface DebugLogEntry {
+  id: string;
+  ts: string;
+  type: string;
+  message: string;
+  currentPlayerIndex: number;
+  roundWind: Wind;
+  wallCount: number;
+  discardTile?: string;
+  snapshot: {
+    players: DebugPlayerSnapshot[];
+    discardHistory: string[];
+    waitingForClaim?: {
+      tile: string | null;
+      fromPlayer: number;
+      eligiblePlayers: { playerIndex: number; actions: string[] }[];
+    };
+  };
+  details?: Record<string, unknown>;
 }
 
 export interface GameState {
@@ -65,6 +100,7 @@ export interface GameState {
   lastAction: string;
   winner: number | null;
   winningTiles: Tile[];
+  lastDrawnTile: Tile | null;
   winMethod: 'discard' | 'self_draw' | 'qiang_kang' | 'kang_shang' | 'tian_hu' | 'di_hu' | 'men_hu' | 'qi_qiang_yi' | 'hua_hu' | 'hua_shang' | 'thirteen_wonders' | null;
   discardHistory: Tile[];
   moveHistory: string[];
@@ -75,6 +111,9 @@ export interface GameState {
     totals: number[];
     eastPlayerIdx: number;
   } | null;
+  nextRoundCountdown: number | null;
+  dealerPlayerId: number | null;
+  debugLogs: DebugLogEntry[];
 }
 
 export type Direction = 'player' | 'left' | 'across' | 'right';

@@ -4,6 +4,8 @@ import { buildDeck, seededShuffle, sortHand, isBonus } from '../game/tiles';
 import { connection, SERVER_URL } from '../utils/connection';
 import { generateDiceResults, MultiplayerDiceOverlay } from '../components/MultiplayerDiceOverlay';
 import { chooseDiscard } from '../game/ai';
+import { navigate } from '../utils/navigation';
+import { track } from '../utils/analytics';
 
 // Module-level variables to prevent subscription accumulation
 let _multiSubUnsub: (() => void) | null = null;
@@ -30,6 +32,7 @@ export function HostGame() {
 
   useEffect(() => {
     setStatus('Connecting to server...');
+    track('host_room_opened');
     connection.connect(SERVER_URL).then(() => {
       setError('');
       connection.send({ type: 'create_room' });
@@ -43,6 +46,7 @@ export function HostGame() {
       setRoomCode(msg.code);
       connection.setRoomInfo(msg.code, 0);
       setStatus('Waiting for players...');
+      track('host_room_created', { room_code: msg.code });
 
 
     });
@@ -91,6 +95,16 @@ export function HostGame() {
       });
     });
 
+    const unsubRoomClosed = connection.on('room_closed', (msg) => {
+      startedRef.current = true;
+      const reason = msg?.reason === 'empty_timeout'
+        ? 'The room closed because it stayed empty for 10 minutes.'
+        : 'The room has been closed.';
+      setError(reason);
+      setStatus('Room closed.');
+      setRoomCode('');
+    });
+
     const unsubName = connection.on('player_name', (msg) => {
       if (msg.playerIndex >= 0 && msg.playerIndex < 4) {
         setPlayers(prev => {
@@ -102,7 +116,7 @@ export function HostGame() {
     });
 
     return () => {
-      unsubRoom(); unsubJoin(); unsubLeft(); unsubError(); unsubReady(); unsubName();
+      unsubRoom(); unsubJoin(); unsubLeft(); unsubError(); unsubReady(); unsubName(); unsubRoomClosed();
       // Keep subscription & action listener alive after game starts (HostGame unmounts)
       if (!startedRef.current) {
         connection.send({ type: 'leave_room' });
@@ -122,6 +136,7 @@ export function HostGame() {
     if (connection.connected) {
       connection.send({ type: 'player_name', playerIndex: 0, name });
     }
+    track('host_name_saved', { name });
   };
 
   const handleStart = () => {
@@ -131,6 +146,7 @@ export function HostGame() {
     }
 
     startedRef.current = true;
+    track('host_game_start_clicked', { room_code: roomCode });
 
     // Send config to server, server generates seed
     connection.send({ type: 'start_game', config: { ...config } });
@@ -231,6 +247,7 @@ export function HostGame() {
         roundWind: 'east',
         config: msg.config,
         lastAction: `Game started! P${eastIdx} (East) discards first.`,
+        moveHistory: [`Game started! P${eastIdx} (East) discards first.`],
         winner: null,
         winningTiles: [],
         showConfig: false,
@@ -238,7 +255,7 @@ export function HostGame() {
         diceResults: { dice: diceData.dice, totals: diceData.totals, eastPlayerIdx: diceData.eastPlayerIdx },
       });
 
-     window.location.hash = '#/';
+      navigate('/');
 
       // Broadcast initial game state to remote clients
       const stateData: any = {};
@@ -292,7 +309,7 @@ export function HostGame() {
   const handleCancel = () => {
     connection.send({ type: 'leave_room' });
     connection.disconnect();
-    window.location.hash = '#/';
+    navigate('/');
   };
 
   return (

@@ -10,6 +10,7 @@ class GameConnection {
   private _reconnectAttempts = 0;
   private _maxReconnectAttempts = 3;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _manualDisconnect = false;
 
   get connected() { return this._connected; }
   get playerIndex() { return this._playerIndex; }
@@ -17,6 +18,7 @@ class GameConnection {
 
   connect(url: string): Promise<void> {
     this._serverUrl = url;
+    this._manualDisconnect = false;
     this._reconnectAttempts = 0;
     return this._doConnect();
   }
@@ -29,6 +31,13 @@ class GameConnection {
         this._connected = true;
         this._reconnectAttempts = 0;
         this.dispatch({ type: 'connected' });
+        if (this._roomCode && this._playerIndex >= 0) {
+          this.send({
+            type: 'rejoin_room',
+            code: this._roomCode,
+            playerIndex: this._playerIndex,
+          });
+        }
         resolve();
       };
 
@@ -44,6 +53,7 @@ class GameConnection {
       this.ws.onclose = () => {
         this._connected = false;
         this.dispatch({ type: 'disconnected' });
+        if (this._manualDisconnect) return;
         // Auto-reconnect with backoff
         if (this._roomCode && this._reconnectAttempts < this._maxReconnectAttempts) {
           this._reconnectAttempts++;
@@ -93,15 +103,21 @@ class GameConnection {
   setRoomInfo(code: string, index: number) {
     this._roomCode = code;
     this._playerIndex = index;
+    try {
+      sessionStorage.setItem('sgmahjong_room_code', code);
+      sessionStorage.setItem('sgmahjong_player_index', String(index));
+    } catch {
+      // ignore storage failures
+    }
   }
 
   disconnect() {
+    this._manualDisconnect = true;
+    this.cancelReconnect();
     if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
       this.ws = null;
       this._connected = false;
-      return;
-    }
-    if (this.ws) {
+    } else if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
@@ -109,6 +125,12 @@ class GameConnection {
     this._playerIndex = -1;
     this._roomCode = '';
     this.handlers.clear();
+    try {
+      sessionStorage.removeItem('sgmahjong_room_code');
+      sessionStorage.removeItem('sgmahjong_player_index');
+    } catch {
+      // ignore storage failures
+    }
   }
 }
 

@@ -7,6 +7,61 @@ import { Tutorial } from './pages/Tutorial';
 import { Rules } from './pages/Rules';
 import { HostGame } from './pages/HostGame';
 import { JoinGame } from './pages/JoinGame';
+import { navigate } from './utils/navigation';
+import { initAnalytics, trackPageView } from './utils/analytics';
+
+const SITE_NAME = 'Singapore Mahjong';
+const SITE_URL = 'https://sgmahjong.app';
+const SITE_DESCRIPTION = 'Play Singapore Mahjong online with Fei jokers, tai scoring, single-player bots, and multiplayer rooms.';
+const GOOGLE_SITE_VERIFICATION = import.meta.env.VITE_GOOGLE_SITE_VERIFICATION as string | undefined;
+const SITE_KEYWORDS = [
+  'Singapore Mahjong',
+  'SG Mahjong',
+  'mahjong singapore',
+  'Singapore mahjong online',
+  'tai scoring',
+  'Fei joker',
+  'multiplayer mahjong',
+  'single player mahjong',
+  'mahjong rules',
+  'mahjong tutorial',
+].join(', ');
+
+const ROUTE_META: Record<string, { title: string; description: string; keywords: string }> = {
+  '/': {
+    title: 'Singapore Mahjong',
+    description: SITE_DESCRIPTION,
+    keywords: SITE_KEYWORDS,
+  },
+  '/tutorial': {
+    title: 'How to Play - Singapore Mahjong',
+    description: 'Learn how to play Singapore Mahjong online with Fei jokers, tai scoring, winds, melds, and winning hands.',
+    keywords: `${SITE_KEYWORDS}, how to play singapore mahjong, mahjong tutorial`,
+  },
+  '/rules': {
+    title: 'Rules Reference - Singapore Mahjong',
+    description: 'Reference the Singapore Mahjong rules, special hands, call priority, Fei rules, and tai scoring patterns.',
+    keywords: `${SITE_KEYWORDS}, singapore mahjong rules, special hands, call priority`,
+  },
+  '/host': {
+    title: 'Host Multiplayer Room - Singapore Mahjong',
+    description: 'Host a Singapore Mahjong multiplayer room, share the room code, and start a match with friends.',
+    keywords: `${SITE_KEYWORDS}, host mahjong room, multiplayer mahjong room`,
+  },
+  '/join': {
+    title: 'Join Multiplayer Room - Singapore Mahjong',
+    description: 'Join an existing Singapore Mahjong multiplayer room using the room code and custom player name.',
+    keywords: `${SITE_KEYWORDS}, join mahjong room, singapore mahjong multiplayer`,
+  },
+};
+
+function getRoute() {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (ROUTE_META[pathname]) return pathname;
+  const hashRoute = window.location.hash.replace(/^#/, '');
+  const normalizedHash = hashRoute.replace(/\/+$/, '') || '/';
+  return ROUTE_META[normalizedHash] ? normalizedHash : '/';
+}
 
 function Router({ hash }: { hash: string }) {
   switch (hash) {
@@ -30,12 +85,118 @@ export default function App() {
   const [hostDismissed, setHostDismissed] = useState(false);
   const [playerLeftCountdown, setPlayerLeftCountdown] = useState(5);
   const [playerLeftDismissed, setPlayerLeftDismissed] = useState(false);
-  const [hash, setHash] = useState(window.location.hash.slice(1) || '/');
+  const [route, setRoute] = useState(getRoute);
 
   useEffect(() => {
-    const handler = () => setHash(window.location.hash.slice(1) || '/');
+    initAnalytics();
+    const meta = ROUTE_META[route] || ROUTE_META['/'];
+    const gameTitle = phase === 'playing'
+      ? `Live Game - ${SITE_NAME}`
+      : phase === 'finished'
+        ? `Round Complete - ${SITE_NAME}`
+        : meta.title;
+    const gameDescription = phase === 'playing'
+      ? 'Live Singapore Mahjong game in progress with local rules, Fei, and tai scoring.'
+      : phase === 'finished'
+        ? 'A Singapore Mahjong round has ended. Review the result popup, hand details, and score breakdown.'
+        : meta.description;
+    const keywords = meta.keywords;
+    const currentUrl = `${SITE_URL}${route === '/' ? '/' : `${route}/`}`;
+    const canonical = currentUrl;
+    const shouldIndex = phase !== 'playing' && phase !== 'finished' && route !== '/host' && route !== '/join';
+    const robotsContent = shouldIndex
+      ? 'index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1'
+      : 'noindex,nofollow,noarchive';
+
+    document.title = gameTitle;
+
+    const upsertMeta = (selector: string, attrs: Record<string, string>) => {
+      let el = document.head.querySelector(selector) as HTMLMetaElement | null;
+      if (!el) {
+        el = document.createElement('meta');
+        document.head.appendChild(el);
+      }
+      Object.entries(attrs).forEach(([key, value]) => el!.setAttribute(key, value));
+    };
+
+    const upsertLink = (selector: string, attrs: Record<string, string>) => {
+      let el = document.head.querySelector(selector) as HTMLLinkElement | null;
+      if (!el) {
+        el = document.createElement('link');
+        document.head.appendChild(el);
+      }
+      Object.entries(attrs).forEach(([key, value]) => el!.setAttribute(key, value));
+    };
+
+    upsertMeta('meta[name="description"]', { name: 'description', content: gameDescription });
+    upsertMeta('meta[name="keywords"]', { name: 'keywords', content: keywords });
+    upsertMeta('meta[name="author"]', { name: 'author', content: SITE_NAME });
+    upsertMeta('meta[name="robots"]', { name: 'robots', content: robotsContent });
+    upsertMeta('meta[name="googlebot"]', { name: 'googlebot', content: robotsContent });
+    if (GOOGLE_SITE_VERIFICATION) {
+      upsertMeta('meta[name="google-site-verification"]', {
+        name: 'google-site-verification',
+        content: GOOGLE_SITE_VERIFICATION,
+      });
+    }
+    upsertMeta('meta[name="theme-color"]', { name: 'theme-color', content: '#0f3d2e' });
+    upsertMeta('meta[property="og:title"]', { property: 'og:title', content: gameTitle });
+    upsertMeta('meta[property="og:description"]', { property: 'og:description', content: gameDescription });
+    upsertMeta('meta[property="og:type"]', { property: 'og:type', content: 'website' });
+    upsertMeta('meta[property="og:site_name"]', { property: 'og:site_name', content: SITE_NAME });
+    upsertMeta('meta[property="og:url"]', { property: 'og:url', content: currentUrl });
+    upsertMeta('meta[property="og:image"]', { property: 'og:image', content: `${SITE_URL}/og-image.svg` });
+    upsertMeta('meta[property="og:image:alt"]', { property: 'og:image:alt', content: 'Singapore Mahjong game table and title card' });
+    upsertMeta('meta[property="og:locale"]', { property: 'og:locale', content: 'en_SG' });
+    upsertMeta('meta[name="twitter:card"]', { name: 'twitter:card', content: 'summary_large_image' });
+    upsertMeta('meta[name="twitter:title"]', { name: 'twitter:title', content: gameTitle });
+    upsertMeta('meta[name="twitter:description"]', { name: 'twitter:description', content: gameDescription });
+    upsertMeta('meta[name="twitter:image"]', { name: 'twitter:image', content: `${SITE_URL}/og-image.svg` });
+    upsertLink('link[rel="canonical"]', { rel: 'canonical', href: canonical });
+
+    const existingScripts = Array.from(document.head.querySelectorAll('script[data-seo-jsonld="true"]'));
+    existingScripts.forEach((script) => script.remove());
+
+    const schema = [
+      {
+        '@context': 'https://schema.org',
+        '@type': 'WebSite',
+        name: SITE_NAME,
+        url: SITE_URL,
+        description: SITE_DESCRIPTION,
+        inLanguage: 'en-SG',
+      },
+      {
+        '@context': 'https://schema.org',
+        '@type': 'VideoGame',
+        name: SITE_NAME,
+        url: currentUrl,
+        description: gameDescription,
+        applicationCategory: 'Game',
+        genre: ['Mahjong', 'Strategy', 'Board Game'],
+        operatingSystem: 'Web browser',
+        playMode: ['SinglePlayer', 'MultiPlayer'],
+        image: `${SITE_URL}/og-image.svg`,
+      },
+    ];
+
+    const script = document.createElement('script');
+    script.type = 'application/ld+json';
+    script.setAttribute('data-seo-jsonld', 'true');
+    script.textContent = JSON.stringify(schema);
+    document.head.appendChild(script);
+
+    trackPageView(route, gameTitle);
+  }, [route, phase]);
+
+  useEffect(() => {
+    const handler = () => setRoute(getRoute());
     window.addEventListener('hashchange', handler);
-    return () => window.removeEventListener('hashchange', handler);
+    window.addEventListener('popstate', handler);
+    return () => {
+      window.removeEventListener('hashchange', handler);
+      window.removeEventListener('popstate', handler);
+    };
   }, []);
 
   // Listen for player_left globally
@@ -59,7 +220,7 @@ export default function App() {
       setPlayerLeftDismissed(true);
       useGameStore.getState().reset();
       useGameStore.setState({ playerLeft: null, hostDisconnected: false });
-      window.location.hash = '#/';
+      navigate('/');
       return;
     }
     const t = setTimeout(() => setPlayerLeftCountdown(c => c - 1), 1000);
@@ -73,7 +234,7 @@ export default function App() {
         setHostDismissed(true);
         useGameStore.getState().reset();
         useGameStore.setState({ hostDisconnected: false });
-        window.location.hash = '#/';
+        navigate('/');
       }, 5000);
       return () => {
         clearTimeout(t);
@@ -85,14 +246,14 @@ export default function App() {
     setHostDismissed(true);
     useGameStore.getState().reset();
     useGameStore.setState({ hostDisconnected: false });
-    window.location.hash = '#/';
+    navigate('/');
   };
 
   const dismissPlayerLeft = () => {
     setPlayerLeftDismissed(true);
     useGameStore.getState().reset();
     useGameStore.setState({ playerLeft: null, hostDisconnected: false });
-    window.location.hash = '#/';
+    navigate('/');
   };
 
   return (
@@ -115,7 +276,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {phase === 'playing' || phase === 'finished' ? <Game /> : <Router hash={hash} />}
+      {phase === 'playing' || phase === 'finished' ? <Game /> : <Router hash={route} />}
     </>
   );
 }
