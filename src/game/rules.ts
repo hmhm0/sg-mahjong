@@ -1,5 +1,5 @@
 import type { Tile, GameState, Player, Meld } from '../types/mahjong';
-import type { Wind, Suit } from '../types/mahjong';
+import type { Wind, Suit, Dragon } from '../types/mahjong';
 import { isFei, isHonor, sortHand } from './tiles';
 
 // ── Win Detection ──────────────────────────────────────────
@@ -25,6 +25,205 @@ function removeTiles(hand: Tile[], tiles: Tile[]): Tile[] {
     if (idx >= 0) remaining.splice(idx, 1);
   }
   return remaining;
+}
+
+type MeldMode = 'mixed' | 'sequences' | 'pungs';
+
+function getTileKey(tile: Tile): string | null {
+  if (tile.category === 'suit') return `suit:${tile.suit}:${tile.value}`;
+  if (tile.category === 'honor') return `honor:${tile.type}`;
+  return null;
+}
+
+function buildPool(hand: Tile[]): { counts: Record<string, number>; fei: number; total: number } {
+  const counts: Record<string, number> = {};
+  let fei = 0;
+  let total = 0;
+
+  for (const tile of hand) {
+    if (tile.category === 'bonus') continue;
+    total++;
+    if (isFei(tile)) {
+      fei++;
+      continue;
+    }
+    const key = getTileKey(tile);
+    if (!key) continue;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+
+  return { counts, fei, total };
+}
+
+function poolTotal(counts: Record<string, number>, fei: number): number {
+  return Object.values(counts).reduce((sum, n) => sum + n, 0) + fei;
+}
+
+function cloneCounts(counts: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(Object.entries(counts)) as Record<string, number>;
+}
+
+function poolKey(counts: Record<string, number>, fei: number, remaining: number, mode: MeldMode): string {
+  const parts = Object.keys(counts)
+    .filter(k => counts[k] > 0)
+    .sort()
+    .map(k => `${k}:${counts[k]}`)
+    .join('|');
+  return `${mode}|${remaining}|${fei}|${parts}`;
+}
+
+function firstNaturalKey(counts: Record<string, number>): string | null {
+  const keys = Object.keys(counts).filter(k => counts[k] > 0).sort();
+  return keys.length > 0 ? keys[0] : null;
+}
+
+function consumeSequence(
+  counts: Record<string, number>,
+  fei: number,
+  suit: Suit,
+  values: number[],
+  index: number,
+  anchorKey: string,
+  consumedAnchor: boolean,
+): { counts: Record<string, number>; fei: number } | null {
+  if (index === values.length) {
+    return consumedAnchor ? { counts, fei } : null;
+  }
+
+  const key = `suit:${suit}:${values[index]}`;
+  const isAnchorPosition = key === anchorKey;
+
+  if (counts[key] > 0) {
+    const nextCounts = cloneCounts(counts);
+    nextCounts[key] -= 1;
+    const result = consumeSequence(
+      nextCounts,
+      fei,
+      suit,
+      values,
+      index + 1,
+      anchorKey,
+      consumedAnchor || isAnchorPosition,
+    );
+    if (result) return result;
+  }
+
+  if (!isAnchorPosition && fei > 0) {
+    const result = consumeSequence(
+      counts,
+      fei - 1,
+      suit,
+      values,
+      index + 1,
+      anchorKey,
+      consumedAnchor,
+    );
+    if (result) return result;
+  }
+
+  return null;
+}
+
+function canCompleteMelds(
+  counts: Record<string, number>,
+  fei: number,
+  remaining: number,
+  mode: MeldMode,
+  memo: Map<string, boolean>,
+): boolean {
+  const total = poolTotal(counts, fei);
+  if (remaining === 0) return total === 0;
+  if (total !== remaining * 3) return false;
+  if (total === 0) return false;
+  if (fei === total) return total === remaining * 3;
+
+  const key = poolKey(counts, fei, remaining, mode);
+  const cached = memo.get(key);
+  if (cached !== undefined) return cached;
+
+  const anchorKey = firstNaturalKey(counts);
+  if (!anchorKey) {
+    const ok = fei === remaining * 3;
+    memo.set(key, ok);
+    return ok;
+  }
+
+  const [prefix, , suitOrType, valueOrType] = anchorKey.split(':');
+  const anchorTile: Tile =
+    prefix === 'suit'
+      ? { category: 'suit', suit: suitOrType as Suit, value: Number(valueOrType) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }
+      : { category: 'honor', type: suitOrType as Wind | Dragon };
+
+  if (mode !== 'pungs' && anchorTile.category === 'suit') {
+    for (let start = Math.max(1, anchorTile.value - 2); start <= Math.min(7, anchorTile.value); start++) {
+      const values = [start, start + 1, start + 2];
+      const result = consumeSequence(cloneCounts(counts), fei, anchorTile.suit, values, 0, anchorKey, false);
+      if (result && canCompleteMelds(result.counts, result.fei, remaining - 1, mode, memo)) {
+        memo.set(key, true);
+        return true;
+      }
+    }
+  }
+
+  if (mode !== 'sequences') {
+    const naturalCount = counts[anchorKey] || 0;
+    for (let useNatural = Math.min(3, naturalCount); useNatural >= 1; useNatural--) {
+      const useFei = 3 - useNatural;
+      if (useFei > fei) continue;
+      const nextCounts = cloneCounts(counts);
+      nextCounts[anchorKey] -= useNatural;
+      const ok = canCompleteMelds(nextCounts, fei - useFei, remaining - 1, mode, memo);
+      if (ok) {
+        memo.set(key, true);
+        return true;
+      }
+    }
+  }
+
+  memo.set(key, false);
+  return false;
+}
+
+function canCompleteHand(playableHand: Tile[], exposedMeldCount: number, mode: MeldMode): boolean {
+  const pool = buildPool(playableHand);
+  const remainingMelds = 4 - exposedMeldCount;
+  if (remainingMelds < 0) return false;
+  if (pool.total !== remainingMelds * 3 + 2) return false;
+
+  const memo = new Map<string, boolean>();
+
+  if (pool.fei >= 2) {
+    const nextCounts = cloneCounts(pool.counts);
+    if (canCompleteMelds(nextCounts, pool.fei - 2, remainingMelds, mode, memo)) return true;
+  }
+
+  for (const key of Object.keys(pool.counts).sort()) {
+    const naturalCount = pool.counts[key];
+    if (naturalCount <= 0) continue;
+
+    if (naturalCount >= 2) {
+      const nextCounts = cloneCounts(pool.counts);
+      nextCounts[key] -= 2;
+      if (canCompleteMelds(nextCounts, pool.fei, remainingMelds, mode, memo)) return true;
+    }
+
+    if (pool.fei >= 1) {
+      const nextCounts = cloneCounts(pool.counts);
+      nextCounts[key] -= 1;
+      if (canCompleteMelds(nextCounts, pool.fei - 1, remainingMelds, mode, memo)) return true;
+    }
+  }
+
+  return false;
+}
+
+function canCompleteAfterPair(playableHand: Tile[], pair: Tile[], exposedMeldCount: number, mode: MeldMode): boolean {
+  const remaining = removeTiles(playableHand, pair);
+  const pool = buildPool(remaining);
+  const remainingMelds = 4 - exposedMeldCount;
+  if (remainingMelds < 0) return false;
+  if (pool.total !== remainingMelds * 3) return false;
+  return canCompleteMelds(pool.counts, pool.fei, remainingMelds, mode, new Map<string, boolean>());
 }
 
 // ── Unified backtracking meld finder ──
@@ -110,19 +309,36 @@ function collectSeqRecur(
 // Find a valid pair by trying ALL pair combinations and checking if
 // the remaining tiles can form the correct number of melds.
 function hasPair(hand: Tile[]): Tile[] | null {
-  for (let i = 0; i < hand.length; i++) {
-    for (let j = i + 1; j < hand.length; j++) {
-      const feiInPair = [hand[i], hand[j]].filter(isFei).length;
-      if (feiInPair > 1) continue; // two fei alone are not treated as a natural pair here
-      if (tileEqual(hand[i], hand[j]) || feiInPair === 1) {
-        const pair = [hand[i], hand[j]];
-        const remaining = removeTiles(hand, pair);
-        // remaining tiles must form 4 melds: remaining.length / 3 = 4
-        const meldList = findMelds(remaining, 4);
-        if (meldList !== null) return pair;
-      }
+  const playableHand = hand.filter(t => t.category !== 'bonus');
+  const pool = buildPool(playableHand);
+
+  const pairCandidates: Tile[][] = [];
+
+  const feiTiles = playableHand.filter(isFei);
+  if (feiTiles.length >= 2) {
+    pairCandidates.push([feiTiles[0], feiTiles[1]]);
+  }
+
+  for (const key of Object.keys(pool.counts).sort()) {
+    const [prefix, , suitOrType, valueOrType] = key.split(':');
+    const tile: Tile =
+      prefix === 'suit'
+        ? { category: 'suit', suit: suitOrType as Suit, value: Number(valueOrType) as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }
+        : { category: 'honor', type: suitOrType as Wind | Dragon };
+
+    if ((pool.counts[key] || 0) >= 2) {
+      pairCandidates.push([tile, tile]);
+    }
+    if ((pool.counts[key] || 0) >= 1 && pool.fei >= 1) {
+      pairCandidates.push([tile, feiTiles[0]]);
     }
   }
+
+  for (const pair of pairCandidates) {
+    const remaining = removeTiles(playableHand, pair);
+    if (canCompleteHand(remaining, 0, 'mixed')) return pair;
+  }
+
   return null;
 }
 
@@ -140,24 +356,7 @@ export function checkWin(hand: Tile[], melds: Meld[]): boolean {
 
   if (playableHand.length + meldTiles < 14) return false;
   if (meldCount > 4) return false;
-
-  const remainingMeldCount = 4 - meldCount;
-
-  // Try every possible pair, then check if remaining tiles form all melds
-  for (let i = 0; i < playableHand.length; i++) {
-    for (let j = i + 1; j < playableHand.length; j++) {
-      const pair = [playableHand[i], playableHand[j]];
-      const feiInPair = pair.filter(isFei).length;
-      if (feiInPair > 1) continue; // two fei alone are not treated as the pair
-      if (tileEqual(playableHand[i], playableHand[j]) || feiInPair === 1) {
-        const remaining = removeTiles(playableHand, pair);
-        const meldList = findMelds(remaining, remainingMeldCount);
-        if (meldList !== null) return true;
-      }
-    }
-  }
-
-  return false;
+  return canCompleteHand(playableHand, meldCount, 'mixed');
 }
 
 
@@ -190,25 +389,8 @@ function isChouPingHu(hand: Tile[], melds: Meld[], state: GameState, playerId: n
     }
   }
 
-  // Remove the pair and find remaining melds
-  const remaining = removeTiles(playableHand, pair);
   const expectedMeldCount = 4 - melds.length;
-  const meldList = findMelds(remaining, expectedMeldCount);
-  if (!meldList) return false;
-  if (meldList.length !== expectedMeldCount) return false;
-
-  // Check if ANY tile in the sequences could be a valid winning tile for Chou Ping Hu
-  const allMelds: Tile[][] = [...melds.map(m => m.tiles), ...meldList];
-
-  for (const seq of allMelds) {
-    for (const tile of seq) {
-      if (isValidCPHWinTile(tile, seq)) {
-        return true; // At least one valid winning tile exists
-      }
-    }
-  }
-
-  return false;
+  return expectedMeldCount >= 0 && canCompleteAfterPair(playableHand, pair, melds.length, 'sequences');
 }
 
 // Check if a specific tile in a chi meld could be the winning tile for Chou Ping Hu
@@ -262,25 +444,8 @@ function isPingHu(hand: Tile[], melds: Meld[], state: GameState, playerId: numbe
     }
   }
 
-  // Remove the pair and find remaining melds
-  const remaining = removeTiles(playableHand, pair);
   const expectedMeldCount = 4 - melds.length;
-  const meldList = findMelds(remaining, expectedMeldCount);
-  if (!meldList) return false;
-  if (meldList.length !== expectedMeldCount) return false;
-
-  // Check if ANY tile in the sequences could be a valid winning tile for Ping Hu
-  const allMelds: Tile[][] = [...melds.map(m => m.tiles), ...meldList];
-
-  for (const seq of allMelds) {
-    for (const tile of seq) {
-      if (isValidPHWinTile(tile, seq)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  return expectedMeldCount >= 0 && canCompleteAfterPair(playableHand, pair, melds.length, 'sequences');
 }
 
 // Check if a specific tile in a chi meld could be the winning tile for Ping Hu
@@ -327,21 +492,9 @@ function isPongPongHu(hand: Tile[], melds: Meld[], winningTile?: Tile): boolean 
 
   const playableHand = hand.filter(t => t.category !== 'bonus');
 
-  // Find the pair (eyes)
   const pair = hasPair(playableHand);
   if (!pair) return false;
-
-  // Remove pair and find remaining melds
-  const remaining = removeTiles(playableHand, pair);
-  const expectedMeldCount = 4 - melds.length;
-  const meldList = findMelds(remaining, expectedMeldCount);
-  if (!meldList) return false;
-  if (meldList.length !== expectedMeldCount) return false;
-
-  // All remaining melds must be pungs (3 identical tiles), not sequences
-  for (const meld of meldList) {
-    if (!isPungMeld(meld)) return false;
-  }
+  if (!canCompleteAfterPair(playableHand, pair, melds.length, 'pungs')) return false;
 
   // "Must win with the eyes": winning tile must be part of the pair
   if (winningTile && !pair.some(t => tileEqual(t, winningTile))) return false;
@@ -361,21 +514,7 @@ function isKangKangHu(hand: Tile[], melds: Meld[], selfDraw: boolean): boolean {
   if (melds.length > 0) return false;
 
   const playableHand = hand.filter(t => t.category !== 'bonus');
-
-  // Find the pair (eyes)
-  const pair = hasPair(playableHand);
-  if (!pair) return false;
-
-  // Remove pair and find melds — all must be pungs (not sequences)
-  const remaining = removeTiles(playableHand, pair);
-  const meldList = findMelds(remaining, 4);
-  if (!meldList || meldList.length !== 4) return false;
-
-  for (const meld of meldList) {
-    if (!isPungMeld(meld)) return false;
-  }
-
-  return true;
+  return canCompleteHand(playableHand, 0, 'pungs');
 }
 
 // ── Pure Honours (字一色) Detection ──────────────────────
@@ -399,17 +538,7 @@ function isPureHonours(hand: Tile[], melds: Meld[], winningTile?: Tile): boolean
   // Find the pair
   const pair = hasPair(playableHand);
   if (!pair) return false;
-
-  // Remove pair, find remaining melds — all must be pungs
-  const remaining = removeTiles(playableHand, pair);
-  const expected = 4 - melds.length;
-  const meldList = findMelds(remaining, expected);
-  if (!meldList) return false;
-  if (meldList.length !== expected) return false;
-
-  for (const meld of meldList) {
-    if (!isPungMeld(meld)) return false;
-  }
+  if (!canCompleteAfterPair(playableHand, pair, melds.length, 'pungs')) return false;
 
   // Must win with the eyes
   if (winningTile && !pair.some(t => tileEqual(t, winningTile))) return false;
@@ -482,6 +611,27 @@ export interface TaiResult {
   breakdown: { name: string; tai: number }[];
   feiPenalty: number;
   totalTai: number;
+}
+
+export function isAutomaticWinResult(
+  result: TaiResult,
+  flags: {
+    tianHu?: boolean;
+    diHu?: boolean;
+    menHu?: boolean;
+    thirteenWonders?: boolean;
+    qiQiangYi?: boolean;
+    huaHu?: boolean;
+  } = {},
+): boolean {
+  if (flags.tianHu || flags.diHu || flags.menHu || flags.thirteenWonders || flags.qiQiangYi || flags.huaHu) {
+    return true;
+  }
+
+  return result.breakdown.some(({ name }) =>
+    name.startsWith('Big Three Dragons') ||
+    name.startsWith('Da Xi Si')
+  );
 }
 
 export function calculateTai(state: GameState, playerId: number, selfDraw: boolean, visibleOnly: boolean = false, huaShang: boolean = false, kangShang: boolean = false, winningTile?: Tile, tianHu: boolean = false, diHu: boolean = false, menHu: boolean = false, thirteenWonders: boolean = false, qiQiangYi: boolean = false, huaHu: boolean = false): TaiResult {
@@ -624,13 +774,13 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
     }
   }
 
-  // Big Three Dragons: 6 tai
+  // Big Three Dragons: 10 tai — automatic win
   if (allDragonPungTypes.size === 3) {
     tai += 10;
     breakdown.push({ name: 'Big Three Dragons', tai: 10 });
   }
 
-  // Xiao Xi Si (小四喜): limit (40 tai) — 3 wind pungs + 4th wind as eyes
+  // Xiao Xi Si (小四喜): 4 tai — 3 wind pungs + 4th wind as eyes
   const windPungs = melds.filter(m =>
     (m.type === 'pung' || m.type === 'kong' || m.type === 'concealed-kong') &&
     m.tiles[0]?.category === 'honor' && WIND_ORDER.includes(m.tiles[0]?.type as Wind)
@@ -640,8 +790,8 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
     const fourthWind = WIND_ORDER.find(w => !windTypes.has(w));
     const eyePair = hand.filter(t => !isFei(t)).filter(t => t.category === 'honor' && (t as any).type === fourthWind);
     if (eyePair.length >= 2) {
-      tai += 40;
-      breakdown.push({ name: 'Xiao Xi Si (小四喜)', tai: 40 });
+      tai += 4;
+      breakdown.push({ name: 'Xiao Xi Si (小四喜)', tai: 4 });
     }
   }
   // Da Xi Si (大四喜): +10 tai — automatic win with all 4 wind pungs, any eyes
@@ -722,7 +872,7 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
     breakdown.push({ name: 'Kang Shang (Kong Replacement)', tai: 1 });
   }
 
- // Fei penalty: each fei in hand reduces tai by 1
+ // Fei has no tai penalty in this ruleset
   const feiPenalty = 0;
 
   // Tian Hu (天胡 / Heavenly Hand): +10 tai — dealer wins with opening hand

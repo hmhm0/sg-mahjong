@@ -9,7 +9,7 @@ const TUTORIAL_STEPS = [
   },
   {
     title: "Fei (Joker)",
-    content: "Fei tiles are jokers that can substitute for ANY tile to complete a sequence. They CANNOT be used for pungs or kongs. When drawn, they go into your hand (no need to reveal). Fei can never be discarded. Each fei in your hand at winning reduces your tai by 1."
+    content: "Fei tiles are jokers that can substitute for ANY tile to complete a hand. They can be used for sequences, pungs, kongs, and the eyes. Fei is not a bonus tile, goes into your hand when drawn, and can never be discarded."
   },
   {
     title: "Dealing",
@@ -25,11 +25,11 @@ const TUTORIAL_STEPS = [
   },
   {
     title: "Bonuses",
-    content: "Drawing a Flower, Season, or Animal tile gives you a replacement draw. If you collect matching pairs (Cat + Mouse, Rooster + Centipede), you get bonus points. Flowers and Seasons matching your seat position also give +1 tai each."
+    content: "Drawing a Flower, Season, or Animal tile gives you a replacement draw. Flowers and Seasons matching your seat position also give +1 tai each. Animals give +1 tai each when collected."
   },
   {
     title: "Tai Scoring",
-    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +6 tai\nAll Pungs: +3 tai\nBig Three Dragons: +6 tai\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nFei in hand reduces tai by 1 each. The minimum tai to win is configurable."
+    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +4 tai\nAll Pungs: +3 tai\nBig Three Dragons: +10 tai (automatic win)\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nThe minimum tai to win is configurable."
   },
   {
     title: "Winning",

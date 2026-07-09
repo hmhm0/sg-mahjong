@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { GameState, GameConfig, Tile, Meld, Player, Wind } from '../types/mahjong';
 import { buildDeck, shuffleDeck, sortHand, isFei, isBonus } from '../game/tiles';
-import { checkWin, calculateTai, canChi, canPung, canKong, canSelfKong, canUpgradePungToKong, hasValidTai, isThirteenWonders } from '../game/rules';
+import { checkWin, calculateTai, canChi, canPung, canKong, canSelfKong, canUpgradePungToKong, hasValidTai, isThirteenWonders, isAutomaticWinResult } from '../game/rules';
 import { chooseDiscard } from '../game/ai';
 
 // Helper: find next player clockwise by seat wind (not by index)
@@ -356,7 +356,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (playerIndex === localPlayerIdx && (canWinSelf || canWinTW)) {
       const tempState = { ...state, players: newPlayers, wall: newWall, config: state.config };
       const result = calculateTai(tempState, playerIndex, true, false, isBonusReplacement, false, undefined, false, false, isMenHu, canWinTW);
-      if (isMenHu || canWinTW || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
+      const isAutomaticWin = isAutomaticWinResult(result, { menHu: isMenHu, thirteenWonders: canWinTW });
+      if (isAutomaticWin || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
           result.totalTai >= state.config.taiThreshold) {
         set({
           players: newPlayers,
@@ -402,7 +403,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
      if (canWinSelf || canWinTW) {
         const tempState = { ...state, players: newPlayers, wall: newWall, config: state.config };
         const result = calculateTai(tempState, playerIndex, true, false, isBonusReplacement, false, undefined, false, false, isMenHu, canWinTW);
-        if (isMenHu || canWinTW || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
+        const isAutomaticWin = isAutomaticWinResult(result, { menHu: isMenHu, thirteenWonders: canWinTW });
+        if (isAutomaticWin || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
             result.totalTai >= state.config.taiThreshold) {
           setTimeout(() => {
             get().selfDrawWinAction(playerIndex);
@@ -483,9 +485,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (isTWClaim || checkWin([...playerHand, discardedTile], playerMelds)) {
         const isDiHu = state.discardHistory.length === 0 && playerIndex === eastPlayerIdx && p !== eastPlayerIdx;
         const result = calculateTai(state, p, false, false, false, false, discardedTile, false, isDiHu, false, false, isTWClaim);
+        const isAutomaticWin = isAutomaticWinResult(result, { diHu: isDiHu, thirteenWonders: isTWClaim });
         const meetsThreshold = (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
             result.totalTai >= state.config.taiThreshold;
-        if (isDiHu || isTWClaim || meetsThreshold) {
+        if (isAutomaticWin || meetsThreshold) {
           actions.push('win');
         }
       }
@@ -548,7 +551,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       const isDiHu = state.discardHistory.length === 1 && tile && fromPlayer === eastPlayerIdx && playerIndex !== eastPlayerIdx;
       const isTWClaim = isThirteenWonders([...newPlayers[playerIndex].hand, tile], newPlayers[playerIndex].melds);
       const result = calculateTai(state, playerIndex, false, false, false, false, tile, false, isDiHu, false, false, isTWClaim);
-      if (isDiHu || isTWClaim || result.totalTai >= state.config.taiThreshold || state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) {
+      const isAutomaticWin = isAutomaticWinResult(result, { diHu: isDiHu, thirteenWonders: isTWClaim });
+      if (isAutomaticWin || result.totalTai >= state.config.taiThreshold || state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) {
         const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');
         const nextDealer = playerIndex !== dealerIdx ? (dealerIdx + 1) % 4 : dealerIdx;
           set({
@@ -670,7 +674,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (claimType === 'kong' && checkWin(newPlayers[playerIndex].hand, newPlayers[playerIndex].melds)) {
       const tempState = { ...state, players: newPlayers, wall: kongWall, config: state.config };
       const result = calculateTai(tempState, playerIndex, true, false, false, true);
-      if ((state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
+      const isAutomaticWin = isAutomaticWinResult(result);
+      if (isAutomaticWin || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
           result.totalTai >= state.config.taiThreshold) {
         if (playerIndex === 0) {
           set({
@@ -779,7 +784,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       if (checkWin(newPlayers[playerIndex].hand, newPlayers[playerIndex].melds)) {
         const tempState = { ...state, players: newPlayers, wall: newWall };
         const result = calculateTai(tempState, playerIndex, true, false, false, true);
-        if ((state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
+        const isAutomaticWin = isAutomaticWinResult(result);
+        if (isAutomaticWin || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
             result.totalTai >= state.config.taiThreshold) {
           const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');
           set({
@@ -815,7 +821,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (state.phase !== 'playing') return;
 
     const result = calculateTai(state, playerIndex, true, false, state.isHuaShang, state.isKangShang, undefined, false, false, state.isMenHu, state.isTW);
-    if (state.isMenHu || state.isTW || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
+    const isAutomaticWin = isAutomaticWinResult(result, { menHu: state.isMenHu, thirteenWonders: state.isTW });
+    if (isAutomaticWin || (state.config.unlimitedTai && result.totalTai >= state.config.taiThreshold) ||
         result.totalTai >= state.config.taiThreshold) {
       const newPlayers = state.players.map(p => ({ ...p, hand: [...p.hand], melds: [...p.melds] }));
       const dealerIdx = state.players.findIndex(p => p.seatWind === 'east');

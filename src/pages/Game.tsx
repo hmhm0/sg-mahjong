@@ -6,6 +6,40 @@ import { buildDeck, seededShuffle, sortHand, isBonus } from '../game/tiles';
 import { generateDiceResults } from '../components/MultiplayerDiceOverlay';
 import { calculateTai } from '../game/rules';
 
+const WIN_HEADLINE_PRIORITY = [
+  'Tian Hu (天胡)',
+  'Di Hu (地胡)',
+  'Men Hu (门胡)',
+  'Thirteen Wonders (十三幺)',
+  'Qi Qiang Yi (七搶一)',
+  'Hua Hu (花胡)',
+  'Shi Ba Luo Han (十八罗汉)',
+  'Da Xi Si (大四喜)',
+  'Big Three Dragons',
+  'Xiao Xi Si (小四喜)',
+  'Pure Honours (字一色)',
+  'Little Three Dragons',
+  'Kang Kang Hu (杠杠胡)',
+  'Full Flush Sequence Hand (清一色平胡)',
+  'Full Flush Triplets Hand (清一色碰碰胡)',
+  'Full Flush',
+  'Half Flush',
+  'Pong Pong Hu (碰碰胡)',
+  'Ping Hu (平胡)',
+  'Chou Ping Hu (臭平胡)',
+] as const;
+
+function getWinHeadline(
+  breakdown: { name: string; tai: number }[],
+  fallbackName: string,
+): string {
+  for (const target of WIN_HEADLINE_PRIORITY) {
+    const match = breakdown.find(item => item.name === target);
+    if (match) return match.name;
+  }
+  return `${fallbackName} wins`;
+}
+
 export function Game() {
   const reset = useGameStore(s => s.reset);
   const isMultiplayer = useGameStore(s => s.isMultiplayer);
@@ -76,6 +110,7 @@ export function Game() {
 
     return {
       name: winnerPlayer.name,
+      headline: getWinHeadline(result.breakdown, winnerPlayer.name),
       reason: lastAction || 'Winning hand',
       totalTai: result.totalTai,
       breakdown: result.breakdown,
@@ -325,7 +360,8 @@ export function Game() {
                 <div className="flex items-start justify-between gap-4 mb-4">
                   <div>
                     <div className="text-yellow-300 text-xs uppercase tracking-[0.2em] mb-1">Round End</div>
-                    <h2 className="text-2xl font-bold text-white">{winSummary.name} wins</h2>
+                    <h2 className="text-2xl font-bold text-white">{winSummary.headline}</h2>
+                    <div className="text-green-200 text-sm mt-1">{winSummary.name} wins</div>
                   </div>
                   <button
                     onClick={() => setShowWinPopup(false)}

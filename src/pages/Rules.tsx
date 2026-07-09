@@ -28,7 +28,7 @@ export function Rules() {
         <div className="space-y-4">
 
           <Section title="Tile Set" icon="🎴">
-            <p>144 tiles total in a standard set:</p>
+            <p>148 tiles total in a standard set before Fei:</p>
             <ul className="list-disc pl-5 space-y-1 mt-2">
               <li><strong>Suits</strong> (108 tiles): Bamboo, Characters, Dots - each 1-9, 4 copies per tile</li>
               <li><strong>Winds</strong> (16 tiles): East, South, West, North - 4 copies each</li>
@@ -59,16 +59,15 @@ export function Rules() {
                   ['Round Wind Pung', '+1'],
                   ['Dragon Pung (any)', '+1 each'],
                   ['Half Flush (same suit + honors)', '+2'],
-                  ['Full Flush (same suit only)', '+6'],
+                  ['Full Flush (same suit only)', '+4'],
                   ['All Pungs (4 triplet melds)', '+3'],
                   ['Little Three Dragons', '+4'],
-                  ['Big Three Dragons', '+6'],
-                  ['Four Little Winds', '+40 (limit)'],
-                  ['Four Great Winds', '+40 (limit)'],
+                  ['Big Three Dragons', '+10 (automatic win)'],
+                  ['Four Little Winds', '+4'],
+                  ['Four Great Winds', '+10 (automatic win)'],
                   ['Self-Draw', '+1'],
                   ['Concealed Hand (no calls)', '+1'],
                   ['Flower/Season matching seat', '+1 each'],
-                  ['Fei in hand', '-1 each (penalty)'],
                 ].map(([name, tai], i) => (
                   <tr key={i} className="border-b border-green-700/30">
                     <td className="py-1 pr-4 text-green-200">{name}</td>
@@ -84,11 +83,11 @@ export function Rules() {
 
           <Section title="Fei Rules" icon="⭐">
             <ul className="list-disc pl-5 space-y-1">
-              <li>Fei tiles act as wild cards for completing sequences ONLY</li>
-              <li>Cannot use Fei for pungs or kongs</li>
+              <li>Fei tiles act as wild cards for completing hands</li>
+              <li>Fei can be used for sequences, pungs, kongs, and the eyes</li>
+              <li>Fei is not a bonus tile and never goes into the bonus row</li>
               <li>When drawn from the wall, Fei goes into your hand (no reveal/replacement)</li>
               <li>Fei tiles cannot be discarded</li>
-              <li>Each Fei in hand at winning reduces total tai by 1</li>
               <li>Configurable from 0 to 20 Fei tiles (even numbers only)</li>
             </ul>
           </Section>
@@ -105,15 +104,6 @@ export function Rules() {
               If multiple players want the same discard, the highest priority call wins.
               If same priority, the closest player clockwise gets it.
             </p>
-          </Section>
-
-          <Section title="Animal Pairs" icon="🐱">
-
-            <ul className="list-disc pl-5 space-y-1">
-              <li>Cat (Animal 1) + Mouse (Animal 2): special bonus pair</li>
-              <li>Rooster (Animal 3) + Centipede (Animal 4): special bonus pair</li>
-              <li>Collecting a matching pair awards additional scoring</li>
-            </ul>
           </Section>
 
           <Section title="Kalong" icon="🔗">
@@ -199,14 +189,13 @@ export function Rules() {
                   ['Zi Mo (Self-Draw)', 'Draw your own winning tile from the wall'],
                   ['Hu / Win', 'Complete a winning hand and declare victory'],
                   ['Tai', 'Scoring unit (equivalent to &quot;fan&quot; in other variants)'],
-                  ['Fei', 'Joker tile — wild card for sequences only'],
+                  ['Fei', 'Joker tile — wild card for completing hands'],
                   ['Kalong', 'Chi the middle tile of a sequence (e.g., 1-3 chi 2)'],
                   ['Ping Hu', 'Common hand — all sequences, no pungs/kongs'],
                   ['Chou Ping Hu', '&quot;Stinky common hand&quot; — Ping Hu with 0 tai from patterns'],
                   ['Dan Diao', 'Single-tile wait — waiting for one specific tile to complete the pair'],
                   ['Bite / Yao', 'Win from a kong replacement draw'],
                   ['Zeng / Dealer (庄)', 'East wind player — deals first, gets 14 tiles'],
-                  ['Animal Pairs', 'Cat+Mouse and Rooster+Centipede give bonus scoring'],
                 ].map(([term, def], i) => (
                   <tr key={i} className="border-b border-green-700/20">
                     <td className="py-1 pr-3 text-yellow-300 font-bold align-top whitespace-nowrap">{term}</td>

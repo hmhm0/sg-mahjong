@@ -5,6 +5,20 @@ Update this file whenever a meaningful change is made to the codebase.
 
 ---
 
+## [2026-07-09 00:00 SGT] — Phase: Automatic Win Flow & Winner Popup
+
+### Changed
+
+- **Automatic win gate**: `Big Three Dragons` and `Da Xi Si` now bypass the tai-threshold checks anywhere the game decides whether a discard win or self-draw win is allowed.
+- **Winner popup headline**: The end-of-round popup now shows the named winning hand first when a recognized pattern is present, instead of always using a generic `<player> wins` headline.
+- **Xiao Xi Si**: Corrected from `40 tai` to `4 tai` in the scoring engine and rules text.
+
+### Fixed
+
+- **Rules/UI mismatch**: `Four Little Winds` and `Four Great Winds` labels in the rules page now match the active ruleset.
+
+---
+
 ## [2026-07-08] — Phase: Core Gameplay & Scoring
 
 ### Added
@@ -65,16 +79,10 @@ Update this file whenever a meaningful change is made to the codebase.
 - **Concealed pung detection**: Added for dragon/wind patterns (previously only checked exposed melds)
 - **GameTable layout**: Multiple spacing/padding adjustments, hand tile size optimization
 
-### Known Issues
+### Historical Notes
 
-- **Multiplayer**: Host/Join are placeholders; WebSocket server skeleton exists but no game state sync
-- **AI doesn't chi**: AI players will pung/kong/win but never claim chi
-- **No self-kong**: `canSelfKong` function exists but is never called in game flow
-- **No round wind rotation**: Round wind is always East
-- **Chou Ping Hu restrictions**: Documented in Rules page but not code-enforced
-- **Animal pairs bonus**: Not scored (cat+rat, chicken+millipede)
-- **`hasValidTai`**: Imported but unused (threshold check is inline)
-- **Scaling**: Auto-scaling removed due to structural conflicts; page scrolls at sub-400px viewports
+- This section reflected open items from the earlier prototype state and is retained here only as historical context.
+- Current active status should be read from the newest dated entries above.
 
 ---
 

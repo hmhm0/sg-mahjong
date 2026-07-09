@@ -32,7 +32,7 @@ A full-featured **Singapore Mahjong** game with single-player (vs 3 AI) and mult
 
 | Layer | Choice |
 |---|---|
-| Framework | React 18 + TypeScript + React Router |
+| Framework | React 18 + TypeScript |
 | Build | Vite 5 |
 | State | Zustand 4 |
 | Server | Node.js + ws (WebSocket relay for multiplayer) |
@@ -121,7 +121,7 @@ npx vite
 | Half Flush (混一色) | 2 |
 | Pong Pong Hu (碰碰胡) | 2 |
 | Xiao San Yuan (小三元) | 4 |
-| Xiao Xi Si (小四喜) | 40 (limit) |
+| Xiao Xi Si (小四喜) | 4 |
 | All Pungs | 3 |
 | +1 patterns | Seat/Round Wind Pung, Dragon Pung, Self-Draw, Concealed Hand, Chou Ping Hu, Hua Shang, Kang Shang, Dragon Eyes, Flowers/Seasons/Animals |
 
