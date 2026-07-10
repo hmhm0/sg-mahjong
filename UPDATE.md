@@ -5,6 +5,16 @@ Update this file whenever a meaningful change is made to the codebase.
 
 ---
 
+## [2026-07-10] — Phase: Oracle VM Deploy Helper
+
+### Added
+
+- **Single deploy command**: Added `npm run deploy:vm` plus `scripts/deploy-to-oracle-vm.sh` so the local repo can be synced to the Oracle VM, rebuilt there, and published to Nginx in one step. The old `npm run deploy:oracle` alias still works.
+- **macOS launcher**: Added `deploy-to-oracle-vm.command` for a double-clickable deploy entrypoint on macOS.
+- **Deployment docs**: Documented the VM paths, default SSH key, and override environment variables in the README.
+
+---
+
 ## [2026-07-09] — Phase: SEO & Crawlability
 
 ### Changed

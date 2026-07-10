@@ -98,6 +98,46 @@ node server/index.cjs
 npx vite
 ```
 
+### Oracle VM Deploy
+
+The production VM is configured to serve the built frontend from `/var/www/sg-mahjong` and run the multiplayer relay from `/home/ubuntu/sg-mahjong/server/index.cjs`.
+
+Use the one-command deploy helper after making code changes:
+
+```bash
+npm run deploy:vm
+```
+
+On macOS, you can also double-click:
+
+```bash
+./deploy-to-oracle-vm.command
+```
+
+What it does:
+
+1. Builds the project locally.
+2. Rsyncs the repo to the Oracle VM at `/home/ubuntu/sg-mahjong`, excluding `.git`, `node_modules`, `dist`, and local env files.
+3. Runs `npm ci` and `npm run build` on the VM.
+4. Copies the new `dist/` output to `/var/www/sg-mahjong`.
+5. Restarts `sg-mahjong-ws` and reloads Nginx.
+
+Defaults used by the script:
+
+- Host: `140.245.104.25`
+- User: `ubuntu`
+- SSH key: `~/Downloads/ssh-key-2026-07-09.key`
+- App directory: `/home/ubuntu/sg-mahjong`
+- Web root: `/var/www/sg-mahjong`
+
+You can override these per shell session if needed:
+
+```bash
+REMOTE_HOST=1.2.3.4 REMOTE_USER=ubuntu SSH_KEY=~/.ssh/your_key npm run deploy:vm
+```
+
+If you change only documentation, you do not need to deploy.
+
 ---
 
 ## 🎮 How to Play

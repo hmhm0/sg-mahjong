@@ -261,9 +261,9 @@ export default function App() {
       {hostDisconnected && !hostDismissed && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={dismissHostClosed}>
           <div className="bg-green-800 rounded-xl p-6 text-center max-w-sm mx-4 border border-green-600/50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-xl font-bold text-yellow-300 mb-2">Game Closed</h2>
-            <p className="text-green-200 text-sm">The host has closed the game.</p>
-            <p className="text-green-400/60 text-xs mt-4">Auto-closes in 5s...</p>
+            <h2 className="text-xl font-bold text-yellow-300 mb-2">Host Disconnected</h2>
+            <p className="text-green-200 text-sm">The host has disconnected from the room.</p>
+            <p className="text-green-400/60 text-sm mt-4">Returning to the main menu in 5s...</p>
           </div>
         </div>
       )}

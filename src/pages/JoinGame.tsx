@@ -26,9 +26,16 @@ export function JoinGame() {
   const diceDataRef = useRef<typeof diceData>(null);
   const startedRef = useRef(false);
   const stateUpdateArrivedRef = useRef(false);
+  const listenerCleanupRef = useRef<(() => void)[]>([]);
+
+  const cleanupConnectionListeners = () => {
+    listenerCleanupRef.current.forEach((unsub) => unsub());
+    listenerCleanupRef.current = [];
+  };
 
   useEffect(() => {
     return () => {
+      cleanupConnectionListeners();
       if (!startedRef.current) {
         connection.send({ type: 'leave_room' });
         connection.disconnect();
@@ -53,7 +60,8 @@ export function JoinGame() {
       const upperCode = code.toUpperCase();
       connection.send({ type: 'join_room', code: upperCode });
 
-      connection.on('room_joined', (msg) => {
+      cleanupConnectionListeners();
+      const unsubRoomJoined = connection.on('room_joined', (msg) => {
         connection.setRoomInfo(msg.code, msg.playerIndex);
         const defaultName = `Player ${msg.playerIndex + 1}`;
         const finalName = playerName.trim() || defaultName;
@@ -64,20 +72,22 @@ export function JoinGame() {
         setJoined(true);
       });
 
-      connection.on('error', (msg) => {
+      const unsubError = connection.on('error', (msg) => {
         setError(msg.message);
         setStatus('Failed to join room.');
-        connection.disconnect();
+        if (!connection.roomCode) {
+          connection.disconnect();
+        }
       });
 
-      connection.on('room_closed', () => {
+      const unsubRoomClosed = connection.on('room_closed', () => {
         startedRef.current = true;
         setStatus('Room closed.');
         setError('The room has been closed.');
         useGameStore.setState({ hostDisconnected: true });
       });
 
-      connection.on('player_joined', (msg) => {
+      const unsubPlayerJoined = connection.on('player_joined', (msg) => {
         const slotIdx = msg.playerIndex;
         if (slotIdx >= 1 && slotIdx <= 3) {
           setPlayers(prev => {
@@ -88,7 +98,7 @@ export function JoinGame() {
         }
       });
 
-      connection.on('player_left', (msg) => {
+      const unsubPlayerLeft = connection.on('player_left', (msg) => {
         const slotIdx = msg.playerIndex;
         if (slotIdx >= 0 && slotIdx <= 3) {
           setPlayers(prev => {
@@ -99,7 +109,7 @@ export function JoinGame() {
         }
       });
 
-      connection.on('player_name', (msg) => {
+      const unsubPlayerName = connection.on('player_name', (msg) => {
         const slotIdx = msg.playerIndex;
         if (slotIdx >= 0 && slotIdx <= 3) {
           setPlayers(prev => {
@@ -110,11 +120,11 @@ export function JoinGame() {
         }
       });
 
-      connection.on('game_started', (msg) => {
+      const unsubGameStarted = connection.on('game_started', () => {
         startedRef.current = true;
       });
 
-      connection.on('player_ready', (msg) => {
+      const unsubReady = connection.on('player_ready', (msg) => {
         if (msg.playerIndex >= 0 && msg.playerIndex < 4) {
           setReadyState(prev => {
             const next = [...prev];
@@ -124,7 +134,7 @@ export function JoinGame() {
         }
       });
 
-      connection.on('state_update', (msg) => {
+      const unsubStateUpdate = connection.on('state_update', (msg) => {
         startedRef.current = true;
         stateUpdateArrivedRef.current = true;
         track('multiplayer_state_received', { room_code: connection.roomCode, player_index: connection.playerIndex });
@@ -139,7 +149,7 @@ export function JoinGame() {
         }
       });
 
-      connection.on('dice_results', (msg: any) => {
+      const unsubDiceResults = connection.on('dice_results', (msg: any) => {
         const results = {
           dice: msg.dice as [number, number, number][],
           totals: msg.totals as number[],
@@ -150,6 +160,34 @@ export function JoinGame() {
         setDiceData(results);
       });
 
+      const unsubDisconnected = connection.on('disconnected', () => {
+        if (connection.roomCode && !startedRef.current) {
+          setStatus('Connection lost. Reconnecting...');
+          setError('Connection dropped. Reconnecting to the room...');
+        }
+      });
+
+      const unsubReconnecting = connection.on('reconnecting', (msg) => {
+        if (connection.roomCode && !startedRef.current) {
+          setStatus(`Reconnecting... (${msg.attempt}/${msg.maxAttempts})`);
+        }
+      });
+
+      listenerCleanupRef.current = [
+        unsubRoomJoined,
+        unsubError,
+        unsubRoomClosed,
+        unsubPlayerJoined,
+        unsubPlayerLeft,
+        unsubPlayerName,
+        unsubGameStarted,
+        unsubReady,
+        unsubStateUpdate,
+        unsubDiceResults,
+        unsubDisconnected,
+        unsubReconnecting,
+      ];
+
      } catch (e) {
       setError('Could not connect to game server. Make sure the server is running.');
       setStatus('Connection failed.');
@@ -157,6 +195,7 @@ export function JoinGame() {
   };
 
   const handleCancel = () => {
+    cleanupConnectionListeners();
     connection.send({ type: 'leave_room' });
     connection.disconnect();
     navigate('/');

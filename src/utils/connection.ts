@@ -57,6 +57,11 @@ class GameConnection {
         // Auto-reconnect with backoff
         if (this._roomCode && this._reconnectAttempts < this._maxReconnectAttempts) {
           this._reconnectAttempts++;
+          this.dispatch({
+            type: 'reconnecting',
+            attempt: this._reconnectAttempts,
+            maxAttempts: this._maxReconnectAttempts,
+          });
           this._reconnectTimer = setTimeout(() => {
             this._doConnect();
           }, 2000 * this._reconnectAttempts);
@@ -135,4 +140,4 @@ class GameConnection {
 }
 
 export const connection = new GameConnection();
-export const SERVER_URL = `ws://${window.location.hostname}:3002`;
+export const SERVER_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:3002`;
