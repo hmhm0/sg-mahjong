@@ -55,7 +55,7 @@ export function Rules() {
           <Section title="Game Setup" icon="⚙️">
             <ul className="list-disc pl-5 space-y-1">
               <li>4 players, each gets 13 tiles (dealer gets 14)</li>
-              <li>Dealer is East, then South, West, North clockwise</li>
+              <li>Dealer is East, then South, West, North in turn order</li>
               <li>Remaining tiles form the wall (draw pile)</li>
               <li>Can configure minimum tai threshold (0 = any hand wins)</li>
               <li>Can configure number of Fei tiles (0-20, even numbers)</li>
@@ -75,6 +75,7 @@ export function Rules() {
                   ['All Pungs (4 triplet melds)', '+3'],
                   ['Little Three Dragons', '+4'],
                   ['Big Three Dragons', '+10 (automatic win)'],
+                  ['Thirteen Wonders (十三幺)', '+13 (automatic win)'],
                   ['Four Little Winds', '+4'],
                   ['Four Great Winds', '+10 (automatic win)'],
                   ['Self-Draw', '+1'],
@@ -114,7 +115,7 @@ export function Rules() {
             </ol>
             <p className="mt-2 text-green-300/70 text-xs">
               If multiple players want the same discard, the highest priority call wins.
-              If same priority, the closest player clockwise gets it.
+              If same priority, the next player in turn order gets it.
             </p>
           </Section>
 
@@ -137,6 +138,7 @@ export function Rules() {
                 <li>They CAN win via <strong>Zi Mo (Self-Draw)</strong> — drawing the winning tile themselves</li>
                 <li>Winning from another player&apos;s discard for Chou Ping Hu while waiting for only <strong>one tile</strong> is not allowed</li>
                 <li><strong>Dan Diao</strong> (单钓 / single-tile wait): If waiting for one specific tile to complete the pair, you cannot win via Chou Ping Hu even on self-draw</li>
+                <li><strong>Fei</strong> can complete winning hands, but cannot be used to call another player&apos;s discard for chi, pung, or kong</li>
               </ul>
             </div>
           </Section>
@@ -179,7 +181,8 @@ export function Rules() {
               <li><strong>Bite / Yao</strong>: Win from a kong replacement draw</li>
               <li>Must meet minimum <strong>tai threshold</strong> (configurable from 1-10)</li>
               <li>With <strong>0 tai</strong>: Can only win via Self-Draw (Chou Ping Hu restriction)</li>
-              <li><strong>Wall exhaustion</strong> = draw game (no winner, dealer rotates)</li>
+              <li><strong>Wall exhaustion</strong> = draw game by default; flower, animal, and kong replacements come from the back of the same wall; if a kong happened earlier and the wall reaches 15, the round ends as a kong round and the dealer passes to the next player</li>
+              <li><strong>Fei</strong> can complete a legal winning hand, including the pair, but cannot be used in bonus tile rows or discard calls</li>
             </ul>
             <div className="mt-2 p-2 bg-green-900/50 rounded-lg border border-green-700/30">
               <p className="font-bold text-yellow-300 text-xs mb-1">Win Restrictions:</p>
@@ -187,6 +190,7 @@ export function Rules() {
                 <li>0 tai at start of turn → cannot win from another player&apos;s discard (must self-draw)</li>
                 <li>Chou Ping Hu with single-tile wait → cannot win from discard</li>
                 <li>Dan Diao (single-tile wait for the eye) → cannot win as Ping Hu even on self-draw</li>
+                <li>If a discard is the only tile that would complete an entire suit wait, that discard cannot be claimed for a win</li>
               </ul>
             </div>
           </Section>
@@ -219,6 +223,7 @@ export function Rules() {
                   ['Hu / Win', 'Complete a winning hand and declare victory'],
                   ['Tai', 'Scoring unit (equivalent to &quot;fan&quot; in other variants)'],
                   ['Fei', 'Joker tile — wild card for completing hands'],
+                  ['Fei discard calls', 'Not allowed for chi, pung, or kong; Fei only completes winning hands'],
                   ['Kalong', 'Chi the middle tile of a sequence (e.g., 1-3 chi 2)'],
                   ['Ping Hu', 'Common hand — all sequences, no pungs/kongs'],
                   ['Chou Ping Hu', '&quot;Stinky common hand&quot; — Ping Hu with 0 tai from patterns'],

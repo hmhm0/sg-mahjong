@@ -36,7 +36,6 @@ function DiceFace({ value, size = 44 }: { value: number; size?: number }) {
   );
 }
 
-const WINDS = ['east', 'south', 'west', 'north'] as const;
 const WIND_CHARS: Record<string, string> = { east: '東', south: '南', west: '西', north: '北' };
 
 function mulberry32(seed: number) {
@@ -89,6 +88,18 @@ export function MultiplayerDiceOverlay({ dice, totals, eastPlayerIdx, myPlayerIn
   const [animValues, setAnimValues] = useState<[number, number, number][]>(
     Array.from({ length: playerCount }, () => [1, 1, 1] as [number, number, number])
   );
+  const rankedPlayerIndices = [...Array(playerCount).keys()].sort((a, b) => totals[b] - totals[a]);
+  const seatByRank = ['east', 'south', 'west', 'north'] as const;
+  const playerSeatWind: Record<number, string> = Object.fromEntries(
+    rankedPlayerIndices.map((playerIndex, rank) => [playerIndex, seatByRank[rank]]),
+  ) as Record<number, string>;
+  const seatOrder = ['east', 'south', 'west', 'north'] as const;
+  const seatToPlayer = Object.fromEntries(
+    seatOrder.map(seat => {
+      const match = rankedPlayerIndices.find(idx => playerSeatWind[idx] === seat);
+      return [seat, match ?? 0];
+    }),
+  ) as Record<string, number>;
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -149,40 +160,83 @@ export function MultiplayerDiceOverlay({ dice, totals, eastPlayerIdx, myPlayerIn
         )}
 
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
-          {Array.from({ length: playerCount }).map((_, pIdx) => {
-            const vals = animValues[pIdx] || [1, 1, 1];
-            const isEast = (phase === 'result' || phase === 'countdown') && pIdx === eastPlayerIdx;
-            const isMe = pIdx === myPlayerIndex;
-            const total = totals[pIdx] || 0;
-            return (
-              <div key={pIdx} className={`flex items-center gap-3 p-2 rounded-lg ${isEast ? 'bg-yellow-700/40 ring-1 ring-yellow-500' : 'bg-green-700/30'}`}>
-                <div className="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
-                  {pIdx + 1}
+          {phase === 'rolling' ? (
+            Array.from({ length: playerCount }, (_, pIdx) => {
+              const vals = animValues[pIdx] || [1, 1, 1];
+              const isMe = pIdx === myPlayerIndex;
+              return (
+                <div
+                  key={pIdx}
+                  className={`flex items-center gap-3 p-2 rounded-lg border transition-all ${
+                    isMe
+                      ? 'bg-cyan-700/25 border-cyan-300/60 ring-1 ring-cyan-300/50 shadow-[0_0_0_1px_rgba(165,243,252,0.18)]'
+                      : 'bg-green-700/30 border-transparent'
+                  }`}
+                >
+                  <div className="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
+                    {pIdx + 1}
+                  </div>
+                  <div className="flex-1 text-left">
+                    <span className={`text-sm ${isMe ? 'text-cyan-100 font-semibold' : 'text-green-200'}`}>
+                      {isMe ? 'You' : (playerNames?.[pIdx] || `Player ${pIdx + 1}`)}
+                    </span>
+                    {isMe && <span className="ml-2 text-[10px] uppercase tracking-[0.2em] text-cyan-200/90">Your roll</span>}
+                  </div>
+                  <div className="flex gap-1">
+                    {vals.map((v, di) => <DiceFace key={di} value={v} size={36} />)}
+                  </div>
+                  <div className="w-10 text-right">
+                    <span className="font-bold text-green-400">?</span>
+                  </div>
                 </div>
-                <div className="flex-1 text-left">
-                  <span className="text-green-200 text-sm">{isMe ? 'You' : (playerNames?.[pIdx] || `Player ${pIdx + 1}`)}</span>
-                  {isEast && <span className="ml-2 text-yellow-300 text-xs font-bold">東</span>}
+              );
+            })
+          ) : (
+            seatOrder.map((seat, rank) => {
+              const pIdx = seatToPlayer[seat];
+              const vals = animValues[pIdx] || [1, 1, 1];
+              const assignedWind = seat;
+              const isMe = pIdx === myPlayerIndex;
+              const total = totals[pIdx] || 0;
+              return (
+                <div
+                  key={pIdx}
+                  className={`flex items-center gap-3 p-2 rounded-lg border transition-all ${
+                    isMe
+                      ? 'bg-cyan-700/25 border-cyan-300/60 ring-1 ring-cyan-300/50'
+                      : 'bg-green-700/30 border-transparent'
+                  }`}
+                >
+                  <div className="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-xs font-bold text-white shrink-0">
+                    {WIND_CHARS[assignedWind] || rank + 1}
+                  </div>
+                  <div className="flex-1 text-left">
+                    <span className={`text-sm ${isMe ? 'text-cyan-100 font-semibold' : 'text-green-200'}`}>
+                      {isMe ? 'You' : (playerNames?.[pIdx] || `Player ${pIdx + 1}`)}
+                    </span>
+                    {isMe && <span className="ml-2 text-[10px] uppercase tracking-[0.2em] text-cyan-200/90">Your seat</span>}
+                  </div>
+                  <div className="flex gap-1">
+                    {vals.map((v, di) => <DiceFace key={di} value={v} size={36} />)}
+                  </div>
+                  <div className="w-10 text-right">
+                    <span className={`font-bold ${phase === 'result' || phase === 'countdown' ? 'text-green-200' : 'text-green-400'}`}>
+                      {phase === 'result' || phase === 'countdown' ? total : '?'}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex gap-1">
-                  {vals.map((v, di) => <DiceFace key={di} value={v} size={36} />)}
-                </div>
-                <div className="w-10 text-right">
-                  <span className={`font-bold ${phase === 'result' || phase === 'countdown' ? 'text-yellow-300' : 'text-green-400'}`}>
-                    {phase === 'result' || phase === 'countdown' ? total : '?'}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
 
         {(phase === 'result' || phase === 'countdown') && (
           <div className="mt-4 p-3 bg-green-700/50 rounded-xl">
             <div style={{ fontSize: '36px', color: '#fff', fontWeight: 'bold', fontFamily: 'serif' }}>
-              {WIND_CHARS[WINDS[[...Array(totals.length).keys()].sort((a, b) => totals[b] - totals[a]).indexOf(myPlayerIndex)]]}
+              {WIND_CHARS[playerSeatWind[myPlayerIndex]]}
             </div>
             <p className="text-green-100 text-xs">
-              You sit at: <span className="text-yellow-300 font-bold">{WINDS[[...Array(totals.length).keys()].sort((a, b) => totals[b] - totals[a]).indexOf(myPlayerIndex)]}</span>
+              You sit at: <span className="text-yellow-300 font-bold">{playerSeatWind[myPlayerIndex]}</span>
             </p>
           </div>
         )}

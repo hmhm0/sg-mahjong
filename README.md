@@ -16,19 +16,25 @@ Copyright &copy; 2026 sgmahjong.app. All rights reserved.
 - **Comprehensive tai system** — 25+ scoring patterns including Ping Hu, Pong Pong Hu, Thirteen Wonders, pure honour hands, and limit hands
 - **Smart AI** — scoring-based discard selection, claim priority with delays
 - **Configurable** — tai threshold, Fei count, unlimited tai mode
+- **Special-hand cap toggle** — optional `Caps Max Tai for Special` switch with a slider up to 18 tai for special wins
 - **Responsive tile display** — player tiles face-up, opponent tiles face-down with rotation
 - **Rules reference** — in-game rules page covering all scoring patterns
 - **Special hands** — Tian Hu, Di Hu, Men Hu, Thirteen Wonders, Qiang Kang, Da San Yuan, Da Xi Si, Shi Ba Luo Han
 - **Self-Kong** & **Kang Shang** — upgrade pungs, concealed kongs, auto-win on kong replacement
+- **Real wall flow** — normal draws continue until the whole wall is down to 15 tiles, while flower/animal and kong replacements draw from the back of that same wall; there is no separately reserved hidden dead wall
 - **Round wind rotation** — East → South → West → North, game ends after North
 - **AFK warning** — detects player inactivity (>5 min), displays warning to all
 - **Move history** — scrollable popup tracking every action per round
 - **Developer logs** — in-game trace of hands, bonus tiles, discards, and win-evaluation snapshots for debugging
 - **SEO-ready pages** — route-specific titles, descriptions, canonical tags, structured data, robots.txt, sitemap.xml, and social preview metadata
 - **Prerendered public pages** — the build writes static HTML snapshots for `/rules/` and `/tutorial/`, while temporary room pages stay `noindex`
-- **Clean host/join flow** — in-app navigation opens Host/Join without a full reload, and multiplayer reconnects can rejoin the same room after a transient disconnect
+- **Clean host/join flow** — in-app navigation opens Host/Join without a full reload, and multiplayer reconnects can resume the same room after a transient disconnect
 - **App manifest** — includes a web manifest and app metadata so the site behaves more like a finished installable app
 - **Free analytics** — PostHog is wired behind environment variables, with Google Search Console verification support via build-time env injection
+
+### UI Direction
+
+- From this point onward, new UI work should stay mobile-friendly first. Keep layouts compact, touch targets usable, and result/history panels readable on phones before polishing desktop extras.
 
 ## 🖼️ Screenshots
 
@@ -66,6 +72,10 @@ npm run dev
 # Build for production
 npm run build
 # → Output in dist/
+
+# Run the scoring smoke tests
+npm run test:rules
+# → Verifies scoring, payouts, wall flow, dealer rotation, kongs, and special-win transitions
 ```
 
 ### Environment Variables
@@ -138,6 +148,17 @@ REMOTE_HOST=1.2.3.4 REMOTE_USER=ubuntu SSH_KEY=~/.ssh/your_key npm run deploy:vm
 
 If you change only documentation, you do not need to deploy.
 
+### Multiplayer Verification
+
+Multiplayer gameplay is verified manually with separate host and join browser sessions because the VM owns the canonical room state. The main regression checklist is:
+
+1. Create and join a room, then confirm both clients receive the same player names, seat winds, dealer badge, chips, and room state.
+2. Verify ready/countdown and result-to-next-round behavior, including a dealer win and a non-dealer win.
+3. Verify Win, Kong, Pung, Chi, and Pass controls only appear for the eligible local player.
+4. Compare move history and developer logs after relayed actions.
+5. Test host app-switch/reconnect, join reconnect, explicit quit, paused-room handling, and room closure.
+6. Check the table, result screen, payout breakdown, history, and developer logs on mobile browsers.
+
 ---
 
 ## 🎮 How to Play
@@ -174,7 +195,7 @@ If you change only documentation, you do not need to deploy.
 | Da San Yuan (大三元) | 10 |
 | Da Xi Si (大四喜) | 10 |
 | Tian Hu (天胡) / Di Hu (地胡) / Men Hu (门胡) | 10 |
-| Thirteen Wonders (十三幺) | 10 |
+| Thirteen Wonders (十三幺) | 13 |
 | Qi Qiang Yi (七搶一) | 10 |
 | Hua Hu (花胡) | 12 |
 | Shi Ba Luo Han (十八罗汉) | 18 |
@@ -186,6 +207,17 @@ If you change only documentation, you do not need to deploy.
 | +1 patterns | Seat/Round Wind Pung, Dragon Pung, Self-Draw, Concealed Hand, Chou Ping Hu, Hua Shang, Kang Shang, Dragon Eyes, Flowers/Seasons/Animals |
 
 See the full rules reference in-game at `/rules`.
+
+### Regression Coverage
+
+`npm run test:rules` includes deterministic fixtures for:
+
+- Standard, Fei-assisted, and visible-only scoring.
+- Discard and Zi Mo tai thresholds.
+- Payout tables, shooter mode, chip settlement, and tai caps.
+- Front-wall draws, back-wall replacements, the 15-tile cutoff, and kong exhaustion.
+- Dealer-cycle counts and seat-wind rotation.
+- Tian Hu, Di Hu, Men Hu, Hua Shang, Kang Shang, Qi Qiang Yi, Hua Hu, Qiang Kang Thirteen Wonders, and the locked limit-hand totals.
 
 ---
 
@@ -229,10 +261,10 @@ When deploying, make sure the host serves `/index.html` as the SPA fallback for 
 │   │   ├── Game.tsx           # Game wrapper
 │   │   ├── Rules.tsx          # Rules reference
 │   │   ├── Tutorial.tsx       # How to play
-│   │   ├── HostGame.tsx       # Multiplayer host (WIP)
-│   │   └── JoinGame.tsx       # Multiplayer join (WIP)
+│   │   ├── HostGame.tsx       # Multiplayer host lobby
+│   │   └── JoinGame.tsx       # Multiplayer join lobby
 │   ├── utils/
-│   │   └── connection.ts      # WebSocket client (WIP)
+│   │   └── connection.ts      # WebSocket client
 │   ├── App.tsx                # Root component + route handling
 │   └── main.tsx               # Entry point
 ├── public/tiles/              # 48 SVG tile images
@@ -246,7 +278,7 @@ When deploying, make sure the host serves `/index.html` as the SPA fallback for 
 │   ├── cat.svg, rat.svg, chicken.svg, millipede.svg
 │   ├── fei.svg               # Joker tile
 │   └── back.svg               # Face-down tile
-└── server/index.cjs           # WebSocket multiplayer relay
+└── server/index.cjs           # WebSocket multiplayer relay and round setup authority
 ```
 
 ---
@@ -256,12 +288,13 @@ When deploying, make sure the host serves `/index.html` as the SPA fallback for 
 ### Multiplayer Architecture
 
 ```
-Remote Client                Server                  Host (Authority)
+Remote Client                VM Server               Seat 0 Client
 ```
 
-- **Host** runs the full authoritative game state
-- **Join clients** send actions to host, receive full state updates
-- **Server** relays messages between clients (pass-through, no game logic)
+- **VM/server** owns room creation, reconnect snapshots, round setup, and the canonical room state
+- **VM/server** now applies multiplayer turn actions, then broadcasts the canonical state back to every client
+- **Seat 0 client** renders the table and sends the same actions as everyone else; it is no longer the room brain
+- **Join clients** send actions to the VM relay, receive full state updates, and rehydrate from room snapshots
 
 ### Game Flow
 ```

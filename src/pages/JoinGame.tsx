@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useGameStore } from '../store/gameStore';
-import { buildDeck, seededShuffle, sortHand } from '../game/tiles';
 import { connection, SERVER_URL } from '../utils/connection';
-import { generateDiceResults, MultiplayerDiceOverlay } from '../components/MultiplayerDiceOverlay';
 import { navigate } from '../utils/navigation';
 import { track } from '../utils/analytics';
 const AI_BOT_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
@@ -17,15 +15,7 @@ export function JoinGame() {
   const [players, setPlayers] = useState<string[]>(['', 'Sakura', 'Mei Lin', 'Kenji']);
   const [readyState, setReadyState] = useState<boolean[]>([false, false, false, false]);
   const [isReady, setIsReady] = useState(false);
-  const [diceData, setDiceData] = useState<{
-    dice: [number, number, number][];
-    totals: number[];
-    eastPlayerIdx: number;
-    playerCount: number;
-  } | null>(null);
-  const diceDataRef = useRef<typeof diceData>(null);
   const startedRef = useRef(false);
-  const stateUpdateArrivedRef = useRef(false);
   const listenerCleanupRef = useRef<(() => void)[]>([]);
 
   const cleanupConnectionListeners = () => {
@@ -58,7 +48,12 @@ export function JoinGame() {
       setConnected(true);
 
       const upperCode = code.toUpperCase();
-      connection.send({ type: 'join_room', code: upperCode });
+      const storedRoom = connection.getStoredRoomInfo();
+      if (storedRoom && storedRoom.code === upperCode && storedRoom.playerIndex > 0) {
+        connection.send({ type: 'rejoin_room', code: upperCode, playerIndex: storedRoom.playerIndex });
+      } else {
+        connection.send({ type: 'join_room', code: upperCode });
+      }
 
       cleanupConnectionListeners();
       const unsubRoomJoined = connection.on('room_joined', (msg) => {
@@ -72,6 +67,39 @@ export function JoinGame() {
         setJoined(true);
       });
 
+      const unsubSnapshot = connection.on('room_snapshot', (msg) => {
+        if (Array.isArray(msg.names)) {
+          setPlayers(prev => {
+            const next = [...prev];
+            for (let i = 0; i < 4; i++) {
+              const incoming = msg.names[i];
+              if (typeof incoming === 'string' && incoming.trim()) {
+                next[i] = incoming;
+              } else if (i > 0 && !next[i]) {
+                next[i] = AI_BOT_NAMES[i - 1];
+              }
+            }
+            return next;
+          });
+        }
+        if (Array.isArray(msg.ready)) {
+          setReadyState(prev => {
+            const next = [...prev];
+            for (let i = 0; i < 4; i++) {
+              next[i] = Boolean(msg.ready[i]);
+            }
+            return next;
+          });
+        }
+        if (msg.started) {
+          setStatus('Game in progress...');
+        }
+        useGameStore.setState({
+          roomPaused: Boolean(msg.paused),
+          roomPauseReason: msg.pauseReason || null,
+        });
+      });
+
       const unsubError = connection.on('error', (msg) => {
         setError(msg.message);
         setStatus('Failed to join room.');
@@ -82,9 +110,11 @@ export function JoinGame() {
 
       const unsubRoomClosed = connection.on('room_closed', () => {
         startedRef.current = true;
+        connection.markRoomClosed();
+        useGameStore.setState({ multiplayerStartPending: false });
         setStatus('Room closed.');
         setError('The room has been closed.');
-        useGameStore.setState({ hostDisconnected: true });
+        useGameStore.setState({ hostDisconnected: true, roomPaused: false, roomPauseReason: null });
       });
 
       const unsubPlayerJoined = connection.on('player_joined', (msg) => {
@@ -120,8 +150,11 @@ export function JoinGame() {
         }
       });
 
-      const unsubGameStarted = connection.on('game_started', () => {
+      const unsubGameStarted = connection.on('game_started', (msg) => {
         startedRef.current = true;
+        useGameStore.setState({
+          multiplayerStartPending: msg?.mode === 'lobby',
+        });
       });
 
       const unsubReady = connection.on('player_ready', (msg) => {
@@ -136,17 +169,16 @@ export function JoinGame() {
 
       const unsubStateUpdate = connection.on('state_update', (msg) => {
         startedRef.current = true;
-        stateUpdateArrivedRef.current = true;
         track('multiplayer_state_received', { room_code: connection.roomCode, player_index: connection.playerIndex });
         const state = msg.state;
         state.isMultiplayer = true;
         state.isHost = false;
         state.myPlayerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
-        useGameStore.setState(state);
-        // Navigate only if no dice overlay is showing
-        if (!diceDataRef.current) {
-          navigate('/');
-        }
+        const pending = useGameStore.getState().multiplayerStartPending;
+        useGameStore.setState({
+          ...state,
+          multiplayerStartPending: pending,
+        });
       });
 
       const unsubDiceResults = connection.on('dice_results', (msg: any) => {
@@ -156,11 +188,18 @@ export function JoinGame() {
           eastPlayerIdx: msg.eastPlayerIdx as number,
           playerCount: msg.playerCount as number,
         };
-        diceDataRef.current = results;
-        setDiceData(results);
+        useGameStore.setState({
+          diceResults: {
+            dice: results.dice,
+            totals: results.totals,
+            eastPlayerIdx: results.eastPlayerIdx,
+          },
+          multiplayerStartPending: true,
+        });
       });
 
       const unsubDisconnected = connection.on('disconnected', () => {
+        useGameStore.setState({ multiplayerStartPending: false });
         if (connection.roomCode && !startedRef.current) {
           setStatus('Connection lost. Reconnecting...');
           setError('Connection dropped. Reconnecting to the room...');
@@ -175,6 +214,7 @@ export function JoinGame() {
 
       listenerCleanupRef.current = [
         unsubRoomJoined,
+        unsubSnapshot,
         unsubError,
         unsubRoomClosed,
         unsubPlayerJoined,
@@ -196,6 +236,7 @@ export function JoinGame() {
 
   const handleCancel = () => {
     cleanupConnectionListeners();
+    useGameStore.setState({ multiplayerStartPending: false, diceResults: null });
     connection.send({ type: 'leave_room' });
     connection.disconnect();
     navigate('/');
@@ -290,22 +331,6 @@ export function JoinGame() {
         )}
       </div>
     </div>
-    {diceData && (
-      <MultiplayerDiceOverlay
-        dice={diceData.dice}
-        totals={diceData.totals}
-        eastPlayerIdx={diceData.eastPlayerIdx}
-        myPlayerIndex={connection.playerIndex >= 0 ? connection.playerIndex : 0}
-        playerCount={diceData.playerCount}
-        onComplete={() => {
-          diceDataRef.current = null;
-          setDiceData(null);
-          if (stateUpdateArrivedRef.current) {
-            navigate('/');
-          }
-        }}
-      />
-    )}
     </>
   );
 }

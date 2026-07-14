@@ -1,3 +1,5 @@
+import type { ChipSettlementSummary } from '../game/chips';
+
 export type Suit = 'bamboo' | 'characters' | 'dots';
 export type Wind = 'east' | 'south' | 'west' | 'north';
 export type Dragon = 'hong' | 'fa' | 'baak';
@@ -44,6 +46,7 @@ export interface Player {
   melds: Meld[];
   discards: Tile[];
   seatWind: Wind;
+  chips?: number;
   isAlive: boolean; // false if they've won
   bonusTiles: Tile[]; // flowers, seasons, animals drawn by this player
 }
@@ -52,8 +55,12 @@ export interface GameConfig {
   taiThreshold: number;
   unlimitedTai: boolean;
   feiCount: number; // 0, 4, 8, 12, 16, 20
+  payoutTable: 'none' | '010_020' | '030_060' | '1_2';
   startingChips: number | null;
   shooterEnabled: boolean;
+  maxTai?: number;
+  specialTaiCapEnabled?: boolean;
+  specialTaiCap?: number;
   economyEnabled: boolean;
   chipSettlementMode: 'default' | 'shooter';
 }
@@ -61,6 +68,7 @@ export interface GameConfig {
 export interface DebugPlayerSnapshot {
   playerIndex: number;
   name: string;
+  isHuman: boolean;
   seatWind: Wind;
   hand: string[];
   bonusTiles: string[];
@@ -95,17 +103,23 @@ export interface GameState {
   deadWall: Tile[]; // bonus tiles drawn from wall
   currentPlayerIndex: number;
   phase: GamePhase;
+  multiplayerStartPending?: boolean;
   roundWind: Wind;
   config: GameConfig;
   lastAction: string;
   winner: number | null;
   winningTiles: Tile[];
+  winningDiscardPlayer?: number | null;
   lastDrawnTile: Tile | null;
   winMethod: 'discard' | 'self_draw' | 'qiang_kang' | 'kang_shang' | 'tian_hu' | 'di_hu' | 'men_hu' | 'qi_qiang_yi' | 'hua_hu' | 'hua_shang' | 'thirteen_wonders' | null;
   discardHistory: Tile[];
   moveHistory: string[];
   hostDisconnected: boolean;
   playerLeft: { playerIndex: number; playerName: string } | null;
+  roomPaused: boolean;
+  roomPauseReason: { type: 'player_left'; playerIndex: number } | null;
+  roundHadKong?: boolean;
+  roundEndReason?: 'draw' | 'kong_exhaustion' | null;
   diceResults: {
     dice: [number, number, number][];
     totals: number[];
@@ -113,6 +127,7 @@ export interface GameState {
   } | null;
   nextRoundCountdown: number | null;
   dealerPlayerId: number | null;
+  chipSettlement: ChipSettlementSummary | null;
   debugLogs: DebugLogEntry[];
 }
 

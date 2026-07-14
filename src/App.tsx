@@ -9,6 +9,7 @@ import { HostGame } from './pages/HostGame';
 import { JoinGame } from './pages/JoinGame';
 import { navigate } from './utils/navigation';
 import { initAnalytics, trackPageView } from './utils/analytics';
+import { MultiplayerDiceOverlay } from './components/MultiplayerDiceOverlay';
 
 const SITE_NAME = 'Singapore Mahjong';
 const SITE_URL = 'https://sgmahjong.app';
@@ -80,8 +81,14 @@ function Router({ hash }: { hash: string }) {
 
 export default function App() {
   const phase = useGameStore(s => s.phase);
+  const multiplayerStartPending = useGameStore(s => s.multiplayerStartPending);
+  const diceResults = useGameStore(s => s.diceResults);
+  const players = useGameStore(s => s.players);
+  const myPlayerIndex = useGameStore(s => s.myPlayerIndex);
+  const clearDiceResults = () => useGameStore.setState({ diceResults: null });
   const hostDisconnected = useGameStore(s => s.hostDisconnected);
   const playerLeft = useGameStore(s => s.playerLeft);
+  const roomPaused = useGameStore(s => s.roomPaused);
   const [hostDismissed, setHostDismissed] = useState(false);
   const [playerLeftCountdown, setPlayerLeftCountdown] = useState(5);
   const [playerLeftDismissed, setPlayerLeftDismissed] = useState(false);
@@ -157,28 +164,29 @@ export default function App() {
     const existingScripts = Array.from(document.head.querySelectorAll('script[data-seo-jsonld="true"]'));
     existingScripts.forEach((script) => script.remove());
 
-    const schema = [
-      {
-        '@context': 'https://schema.org',
-        '@type': 'WebSite',
-        name: SITE_NAME,
-        url: SITE_URL,
-        description: SITE_DESCRIPTION,
-        inLanguage: 'en-SG',
-      },
-      {
-        '@context': 'https://schema.org',
-        '@type': 'VideoGame',
-        name: SITE_NAME,
-        url: currentUrl,
-        description: gameDescription,
-        applicationCategory: 'Game',
-        genre: ['Mahjong', 'Strategy', 'Board Game'],
-        operatingSystem: 'Web browser',
-        playMode: ['SinglePlayer', 'MultiPlayer'],
-        image: `${SITE_URL}/og-image.svg`,
-      },
-    ];
+    const schema = {
+      '@context': 'https://schema.org',
+      '@graph': [
+        {
+          '@type': 'WebSite',
+          name: SITE_NAME,
+          url: SITE_URL,
+          description: SITE_DESCRIPTION,
+          inLanguage: 'en-SG',
+        },
+        {
+          '@type': 'VideoGame',
+          name: SITE_NAME,
+          url: currentUrl,
+          description: gameDescription,
+          applicationCategory: 'Game',
+          genre: ['Mahjong', 'Strategy', 'Board Game'],
+          operatingSystem: 'Web browser',
+          playMode: ['SinglePlayer', 'MultiPlayer'],
+          image: `${SITE_URL}/og-image.svg`,
+        },
+      ],
+    };
 
     const script = document.createElement('script');
     script.type = 'application/ld+json';
@@ -204,12 +212,98 @@ export default function App() {
     const unsub = connection.on('player_left', (msg) => {
       const s = useGameStore.getState();
       const name = s.players[msg.playerIndex]?.name || 'Player ' + (msg.playerIndex + 1);
-      useGameStore.setState({ playerLeft: { playerIndex: msg.playerIndex, playerName: name } });
+      useGameStore.setState({
+        playerLeft: { playerIndex: msg.playerIndex, playerName: name },
+        roomPaused: true,
+        roomPauseReason: { type: 'player_left', playerIndex: msg.playerIndex },
+      });
       setPlayerLeftCountdown(5);
       setPlayerLeftDismissed(false);
     });
     return () => {
       unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsub = connection.on('room_closed', (msg) => {
+      connection.markRoomClosed();
+      const s = useGameStore.getState();
+      if (s.phase === 'playing' || s.phase === 'finished' || s.isMultiplayer) {
+        useGameStore.setState({ hostDisconnected: true, playerLeft: null, roomPaused: false, roomPauseReason: null });
+      }
+      if (msg?.reason === 'host_disconnect') {
+        setHostDismissed(false);
+      }
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsub = connection.on('room_paused', (msg) => {
+      const s = useGameStore.getState();
+      const pauseReason = msg?.reason || null;
+      useGameStore.setState({
+        roomPaused: true,
+        roomPauseReason: pauseReason,
+        playerLeft: pauseReason?.type === 'player_left'
+          ? { playerIndex: pauseReason.playerIndex, playerName: s.players[pauseReason.playerIndex]?.name || `Player ${pauseReason.playerIndex + 1}` }
+          : s.playerLeft,
+      });
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsub = connection.on('room_resumed', () => {
+      useGameStore.setState({ roomPaused: false, roomPauseReason: null });
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsub = connection.on('state_update', (msg) => {
+      const state = msg?.state;
+      if (!state) return;
+      state.isMultiplayer = true;
+      state.isHost = connection.playerIndex === 0;
+      state.myPlayerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
+      const pending = useGameStore.getState().multiplayerStartPending;
+      useGameStore.setState({
+        ...state,
+        multiplayerStartPending: pending,
+      });
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubGameStarted = connection.on('game_started', (msg) => {
+      useGameStore.setState({
+        multiplayerStartPending: msg?.mode === 'lobby',
+      });
+    });
+    const unsubDiceResults = connection.on('dice_results', (msg: any) => {
+      useGameStore.setState({
+        diceResults: {
+          dice: msg.dice,
+          totals: msg.totals,
+          eastPlayerIdx: msg.eastPlayerIdx,
+        },
+        multiplayerStartPending: true,
+      });
+    });
+    return () => {
+      unsubGameStarted();
+      unsubDiceResults();
     };
   }, []);
 
@@ -220,6 +314,7 @@ export default function App() {
       setPlayerLeftDismissed(true);
       useGameStore.getState().reset();
       useGameStore.setState({ playerLeft: null, hostDisconnected: false });
+      connection.disconnect();
       navigate('/');
       return;
     }
@@ -234,6 +329,7 @@ export default function App() {
         setHostDismissed(true);
         useGameStore.getState().reset();
         useGameStore.setState({ hostDisconnected: false });
+        connection.disconnect();
         navigate('/');
       }, 5000);
       return () => {
@@ -245,14 +341,16 @@ export default function App() {
   const dismissHostClosed = () => {
     setHostDismissed(true);
     useGameStore.getState().reset();
-    useGameStore.setState({ hostDisconnected: false });
+    useGameStore.setState({ hostDisconnected: false, roomPaused: false, roomPauseReason: null });
+    connection.disconnect();
     navigate('/');
   };
 
   const dismissPlayerLeft = () => {
     setPlayerLeftDismissed(true);
     useGameStore.getState().reset();
-    useGameStore.setState({ playerLeft: null, hostDisconnected: false });
+    useGameStore.setState({ playerLeft: null, hostDisconnected: false, roomPaused: false, roomPauseReason: null });
+    connection.disconnect();
     navigate('/');
   };
 
@@ -270,13 +368,28 @@ export default function App() {
       {playerLeft && !playerLeftDismissed && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={dismissPlayerLeft}>
           <div className="bg-green-800 rounded-xl p-6 text-center max-w-sm mx-4 border border-green-600/50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-xl font-bold text-yellow-300 mb-2">Player Left</h2>
+            <h2 className="text-xl font-bold text-yellow-300 mb-2">Room Paused</h2>
             <p className="text-green-200 text-sm">{playerLeft.playerName} has left the game.</p>
+            <p className="text-green-400/60 text-xs mt-2">The room is paused until the host quits or the room closes.</p>
             <p className="text-green-400/60 text-xs mt-4">Auto-closes in {playerLeftCountdown}s...</p>
           </div>
         </div>
       )}
-      {phase === 'playing' || phase === 'finished' ? <Game /> : <Router hash={route} />}
+      {((phase === 'playing' || phase === 'finished') && !multiplayerStartPending) ? <Game /> : <Router hash={route} />}
+      {multiplayerStartPending && diceResults && (
+        <MultiplayerDiceOverlay
+          dice={diceResults.dice}
+          totals={diceResults.totals}
+          eastPlayerIdx={diceResults.eastPlayerIdx}
+          myPlayerIndex={myPlayerIndex}
+          playerCount={players.length || 4}
+          playerNames={players.map(p => p.name)}
+          onComplete={() => {
+            clearDiceResults();
+            useGameStore.setState({ multiplayerStartPending: false });
+          }}
+        />
+      )}
     </>
   );
 }

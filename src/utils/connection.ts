@@ -11,10 +11,30 @@ class GameConnection {
   private _maxReconnectAttempts = 3;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _manualDisconnect = false;
+  private _exitHooksInstalled = false;
+  private _leaveRoomOnExit = () => {
+    if (!this._roomCode || this._manualDisconnect || this._playerIndex === 0) return;
+    try {
+      this.send({ type: 'leave_room' });
+    } catch {
+      // ignore exit-time send failures
+    }
+  };
 
   get connected() { return this._connected; }
   get playerIndex() { return this._playerIndex; }
   get roomCode() { return this._roomCode; }
+  getStoredRoomInfo(): { code: string; playerIndex: number } | null {
+    try {
+      const code = sessionStorage.getItem('sgmahjong_room_code') || '';
+      const idxRaw = sessionStorage.getItem('sgmahjong_player_index');
+      const playerIndex = idxRaw === null ? -1 : Number(idxRaw);
+      if (!code || !Number.isInteger(playerIndex) || playerIndex < 0) return null;
+      return { code, playerIndex };
+    } catch {
+      return null;
+    }
+  }
 
   connect(url: string): Promise<void> {
     this._serverUrl = url;
@@ -26,6 +46,7 @@ class GameConnection {
   private _doConnect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(this._serverUrl);
+      this.installExitHooks();
 
       this.ws.onopen = () => {
         this._connected = true;
@@ -73,14 +94,26 @@ class GameConnection {
       };
     });
   }
+
+  private installExitHooks() {
+    if (this._exitHooksInstalled || typeof window === 'undefined') return;
+    this._exitHooksInstalled = true;
+    window.addEventListener('pagehide', this._leaveRoomOnExit);
+    window.addEventListener('beforeunload', this._leaveRoomOnExit);
+  }
   
   cancelReconnect() {
     if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
     this._reconnectAttempts = this._maxReconnectAttempts;
   }
 
+  markRoomClosed() {
+    this._manualDisconnect = true;
+    this.cancelReconnect();
+  }
+
   send(msg: any) {
-    if (this.ws && this._connected) {
+    if (this.ws && this._connected && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
   }
@@ -126,10 +159,26 @@ class GameConnection {
       this.ws.close();
       this.ws = null;
     }
+    if (this._exitHooksInstalled && typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', this._leaveRoomOnExit);
+      window.removeEventListener('beforeunload', this._leaveRoomOnExit);
+    }
     this._connected = false;
     this._playerIndex = -1;
     this._roomCode = '';
     this.handlers.clear();
+    try {
+      sessionStorage.removeItem('sgmahjong_room_code');
+      sessionStorage.removeItem('sgmahjong_player_index');
+    } catch {
+      // ignore storage failures
+    }
+    this._exitHooksInstalled = false;
+  }
+
+  clearRoomInfo() {
+    this._roomCode = '';
+    this._playerIndex = -1;
     try {
       sessionStorage.removeItem('sgmahjong_room_code');
       sessionStorage.removeItem('sgmahjong_player_index');

@@ -1,19 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useGameStore } from '../store/gameStore';
-import { buildDeck, seededShuffle, sortHand, isBonus } from '../game/tiles';
 import { connection, SERVER_URL } from '../utils/connection';
-import { generateDiceResults, MultiplayerDiceOverlay } from '../components/MultiplayerDiceOverlay';
-import { chooseDiscard } from '../game/ai';
 import { navigate } from '../utils/navigation';
 import { track } from '../utils/analytics';
 
-// Module-level variables to prevent subscription accumulation
-let _multiSubUnsub: (() => void) | null = null;
-let _multiActionUnsub: (() => void) | null = null;
-
 export function HostGame() {
   const config = useGameStore(s => s.config);
-  const startGame = useGameStore(s => s.startGame);
   const AI_BOT_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
   const [hostName, setHostName] = useState('Player 1');
   const [roomCode, setRoomCode] = useState('');
@@ -21,22 +13,25 @@ export function HostGame() {
   const [status, setStatus] = useState('Connecting...');
   const [error, setError] = useState('');
   const [readyState, setReadyState] = useState<boolean[]>([false, false, false, false]);
-  const [diceData, setDiceData] = useState<{
-    dice: [number, number, number][];
-    totals: number[];
-    eastPlayerIdx: number;
-    seed: number;
-    playerCount: number;
-  } | null>(null);
   const startedRef = useRef(false);
+  const attemptedStoredRejoinRef = useRef(false);
+  const pendingFreshCreateRef = useRef(false);
 
   useEffect(() => {
     setStatus('Connecting to server...');
     track('host_room_opened');
     connection.connect(SERVER_URL).then(() => {
       setError('');
-      connection.send({ type: 'create_room' });
-      setStatus('Creating room...');
+      const storedRoom = connection.getStoredRoomInfo();
+      if (storedRoom && storedRoom.playerIndex === 0 && !attemptedStoredRejoinRef.current) {
+        attemptedStoredRejoinRef.current = true;
+        connection.send({ type: 'rejoin_room', code: storedRoom.code, playerIndex: 0 });
+        setStatus('Rejoining room...');
+      } else {
+        pendingFreshCreateRef.current = false;
+        connection.send({ type: 'create_room' });
+        setStatus('Creating room...');
+      }
     }).catch(() => {
       setError('Could not connect to game server. Make sure the server is running.');
     });
@@ -49,6 +44,39 @@ export function HostGame() {
       track('host_room_created', { room_code: msg.code });
 
 
+    });
+
+    const unsubSnapshot = connection.on('room_snapshot', (msg) => {
+      if (Array.isArray(msg.names)) {
+        setPlayers(prev => {
+          const next = [...prev];
+          for (let i = 0; i < 4; i++) {
+            const incoming = msg.names[i];
+            if (typeof incoming === 'string' && incoming.trim()) {
+              next[i] = incoming;
+            } else if (i > 0 && !next[i]) {
+              next[i] = AI_BOT_NAMES[i - 1];
+            }
+          }
+          return next;
+        });
+      }
+      if (Array.isArray(msg.ready)) {
+        setReadyState(prev => {
+          const next = [...prev];
+          for (let i = 0; i < 4; i++) {
+            next[i] = Boolean(msg.ready[i]);
+          }
+          return next;
+        });
+      }
+      if (msg.started) {
+        setStatus('Game in progress...');
+      }
+      useGameStore.setState({
+        roomPaused: Boolean(msg.paused),
+        roomPauseReason: msg.pauseReason || null,
+      });
     });
 
     const unsubJoin = connection.on('player_joined', (msg) => {
@@ -85,6 +113,17 @@ export function HostGame() {
 
     const unsubError = connection.on('error', (msg) => {
       setError(msg.message);
+      useGameStore.setState({ multiplayerStartPending: false });
+      if (msg.message === 'Room not found' && attemptedStoredRejoinRef.current && !pendingFreshCreateRef.current) {
+        pendingFreshCreateRef.current = true;
+        connection.clearRoomInfo();
+        setError('');
+        setRoomCode('');
+        setPlayers(['You (Host)', ...AI_BOT_NAMES]);
+        setReadyState([false, false, false, false]);
+        setStatus('Creating room...');
+        connection.send({ type: 'create_room' });
+      }
     });
 
     const unsubReady = connection.on('player_ready', (msg) => {
@@ -97,12 +136,54 @@ export function HostGame() {
 
     const unsubRoomClosed = connection.on('room_closed', (msg) => {
       startedRef.current = true;
+      connection.markRoomClosed();
+      useGameStore.setState({ multiplayerStartPending: false });
       const reason = msg?.reason === 'empty_timeout'
         ? 'The room closed because it stayed empty for 10 minutes.'
         : 'The room has been closed.';
       setError(reason);
       setStatus('Room closed.');
       setRoomCode('');
+    });
+
+    const unsubStateUpdate = connection.on('state_update', (msg) => {
+      startedRef.current = true;
+      const state = msg.state;
+      if (!state) return;
+      state.isMultiplayer = true;
+      state.isHost = true;
+      state.myPlayerIndex = 0;
+      const pending = useGameStore.getState().multiplayerStartPending;
+      useGameStore.setState({
+        ...state,
+        multiplayerStartPending: pending,
+      });
+    });
+
+    const unsubDiceResults = connection.on('dice_results', (msg: any) => {
+      const results = {
+        dice: msg.dice as [number, number, number][],
+        totals: msg.totals as number[],
+        eastPlayerIdx: msg.eastPlayerIdx as number,
+        seed: msg.seed as number,
+        playerCount: msg.playerCount as number,
+      };
+      useGameStore.setState({
+        diceResults: {
+          dice: results.dice,
+          totals: results.totals,
+          eastPlayerIdx: results.eastPlayerIdx,
+        },
+        multiplayerStartPending: true,
+      });
+    });
+
+    const unsubGameStarted = connection.on('game_started', (msg) => {
+      startedRef.current = true;
+      setStatus('Starting round...');
+      useGameStore.setState({
+        multiplayerStartPending: msg?.mode === 'lobby',
+      });
     });
 
     const unsubName = connection.on('player_name', (msg) => {
@@ -116,7 +197,7 @@ export function HostGame() {
     });
 
     return () => {
-      unsubRoom(); unsubJoin(); unsubLeft(); unsubError(); unsubReady(); unsubName(); unsubRoomClosed();
+      unsubRoom(); unsubJoin(); unsubLeft(); unsubError(); unsubReady(); unsubName(); unsubRoomClosed(); unsubSnapshot(); unsubStateUpdate(); unsubDiceResults(); unsubGameStarted();
       // Keep subscription & action listener alive after game starts (HostGame unmounts)
       if (!startedRef.current) {
         connection.send({ type: 'leave_room' });
@@ -146,169 +227,28 @@ export function HostGame() {
     }
 
     startedRef.current = true;
-    track('host_game_start_clicked', { room_code: roomCode });
-
-    // Send config to server, server generates seed
-    connection.send({ type: 'start_game', config: { ...config } });
-
-    const unsubGame = connection.on('game_started', (msg) => {
-      const playerCount = 4;
-      const seed = msg.seed;
-
-      // Generate deterministic dice results from seed
-      const results = generateDiceResults(seed, playerCount);
-
-      // Set dice data to show the overlay
-      setDiceData({
-        dice: results.dice,
-        totals: results.totals,
-        eastPlayerIdx: results.eastPlayerIdx,
-        seed,
-        playerCount,
-      });
-
-      // Broadcast dice results to join client
-      connection.send({ type: 'dice_results', dice: results.dice, totals: results.totals, eastPlayerIdx: results.eastPlayerIdx, playerCount, myPlayerIndex: 0 });
-
-      unsubGame();
+    useGameStore.setState({
+      multiplayerStartPending: true,
+      diceResults: null,
     });
+    track('host_game_start_clicked', { room_code: roomCode });
+    const roster = players.map((name, i) => ({
+      id: i,
+      name: name || `Player ${i + 1}`,
+      isHuman: i === 0 ? true : !AI_BOT_NAMES.includes(name),
+    }));
+    connection.send({ type: 'start_game', mode: 'lobby', config: { ...config }, players: roster });
   };
 
-  const handleDiceComplete = () => {
-    if (!diceData) return;
-    const msg = { playerCount: diceData.playerCount, seed: diceData.seed, config: { ...config } };
-
-      // Generate deterministic game from seed
-      const deck = buildDeck(msg.config);
-      const shuffled = seededShuffle(deck, msg.seed);
-      const windOrder = ['east', 'south', 'west', 'north'] as const;
-      const eastIdx = diceData.eastPlayerIdx;
-
-      const seatRankByTotal = [...Array(4).keys()].sort((a, b) => diceData.totals[b] - diceData.totals[a]);
-      const playerData: any[] = [];
-      for (let p = 0; p < 4; p++) {
-        playerData.push({
-          id: p,
-          name: p === 0 ? (players[p] || 'Player 1') : (AI_BOT_NAMES.includes(players[p]) ? AI_BOT_NAMES[p - 1] : (players[p] || `Player ${p + 1}`)),
-          isHuman: p === 0 || !AI_BOT_NAMES.includes(players[p]),
-          hand: [] as any[],
-          melds: [],
-          discards: [],
-          seatWind: windOrder[seatRankByTotal.indexOf(p)],
-          isAlive: true,
-        });
-      }
-
-      // Deal: same logic as startGame in store
-      let wallIdx = 0;
-      for (let round = 0; round < 3; round++) {
-        for (let p = 0; p < 4; p++) {
-          for (let i = 0; i < 4; i++) {
-            playerData[p].hand.push(shuffled[wallIdx++]);
-          }
-        }
-      }
-      for (let p = 0; p < 4; p++) {
-        playerData[p].hand.push(shuffled[wallIdx++]);
-      }
-      // East player (highest dice roller) gets the extra tile
-      playerData[eastIdx].hand.push(shuffled[wallIdx++]);
-
-      // Reveal bonus tiles (flowers, seasons, animals) and draw replacements
-      // Clockwise order starting from East
-      for (let offset = 0; offset < 4; offset++) {
-        const p = (eastIdx + offset) % 4;
-        while (true) {
-          const bonusIdx = playerData[p].hand.findIndex((t: any) => isBonus(t));
-          if (bonusIdx === -1) break;
-          const bonusTile = playerData[p].hand.splice(bonusIdx, 1)[0];
-          if (!playerData[p].bonusTiles) playerData[p].bonusTiles = [];
-          playerData[p].bonusTiles.push(bonusTile);
-          // Draw replacement from wall (clockwise from East)
-          if (wallIdx < shuffled.length) {
-            playerData[p].hand.push(shuffled[wallIdx++]);
-          }
-        }
-        playerData[p].hand = sortHand(playerData[p].hand);
-      }
-
-      const remainingWall = shuffled.slice(wallIdx);
-
-      // Set local state
-      useGameStore.setState({
-        isMultiplayer: true,
-        isHost: true,
-        myPlayerIndex: 0,
-        players: playerData,
-        wall: remainingWall,
-        deadWall: [],
-        currentPlayerIndex: eastIdx,
-        phase: 'playing',
-        roundWind: 'east',
-        config: msg.config,
-        lastAction: `Game started! P${eastIdx} (East) discards first.`,
-        moveHistory: [`Game started! P${eastIdx} (East) discards first.`],
-        winner: null,
-        winningTiles: [],
-        showConfig: false,
-       message: players.length > 0 ? 'Your turn!' : 'Starting...',
-        diceResults: { dice: diceData.dice, totals: diceData.totals, eastPlayerIdx: diceData.eastPlayerIdx },
-      });
-
-      navigate('/');
-
-      // Broadcast initial game state to remote clients
-      const stateData: any = {};
-      const fullState = useGameStore.getState();
-      for (const key in fullState) {
-        if (typeof (fullState as any)[key] !== 'function' && key !== 'myPlayerIndex') {
-          stateData[key] = (fullState as any)[key];
-        }
-      }
-      stateData.isMultiplayer = true;
-      stateData.isHost = true;
-      connection.send({ type: 'state_update', state: stateData });
-
-      // If East is a bot, auto-discard after a delay
-      if (!playerData[eastIdx].isHuman) {
-        setTimeout(() => {
-          const st = useGameStore.getState();
-          if (st.phase !== 'playing') return;
-          const hand = st.players[eastIdx].hand;
-          const melds = st.players[eastIdx].melds;
-          const discardIdx = chooseDiscard(hand, melds);
-          if (discardIdx >= 0 && discardIdx < hand.length) {
-            st.discardTile(eastIdx, discardIdx);
-          }
-        }, 800);
-      }
-
-      // Set up store subscription to broadcast state to remote clients
-      if (_multiSubUnsub) _multiSubUnsub();
-      _multiSubUnsub = useGameStore.subscribe(() => {
-        const s = useGameStore.getState();
-        if (!s.isMultiplayer || s.phase === 'setup') return;
-        const data: any = {};
-        for (const key in s) {
-          if (typeof (s as any)[key] !== 'function' && key !== 'myPlayerIndex') {
-            data[key] = (s as any)[key];
-          }
-        }
-        data.isMultiplayer = true;
-        data.isHost = true;
-        connection.send({ type: 'state_update', state: data });
-      });
-
-      // Listen for remote player actions
-      if (_multiActionUnsub) _multiActionUnsub();
-      _multiActionUnsub = connection.on('player_action', (msg: any) => {
-        useGameStore.getState().applyRemoteAction(msg.playerIndex, msg.actionType, msg.data);
-      });
-    };
-
   const handleCancel = () => {
-    connection.send({ type: 'leave_room' });
-    connection.disconnect();
+    attemptedStoredRejoinRef.current = false;
+    pendingFreshCreateRef.current = false;
+    useGameStore.setState({ multiplayerStartPending: false, diceResults: null });
+    connection.clearRoomInfo();
+    connection.send({ type: 'host_quit' });
+    setTimeout(() => {
+      connection.disconnect();
+    }, 150);
     navigate('/');
   };
 
@@ -376,21 +316,16 @@ export function HostGame() {
             </button>
           </>
         ) : (
-          <p className="text-green-300">{status}</p>
+          <>
+            <p className="text-green-300">{status}</p>
+            <button onClick={handleCancel}
+              className="w-full mt-6 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">
+              Back / Cancel
+            </button>
+          </>
         )}
       </div>
     </div>
-    {diceData && (
-      <MultiplayerDiceOverlay
-        playerNames={players}
-        dice={diceData.dice}
-        totals={diceData.totals}
-        eastPlayerIdx={diceData.eastPlayerIdx}
-        myPlayerIndex={0}
-        playerCount={diceData.playerCount}
-        onComplete={handleDiceComplete}
-      />
-    )}
     </>
   );
 }

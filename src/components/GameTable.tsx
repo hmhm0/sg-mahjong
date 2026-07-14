@@ -6,22 +6,20 @@ import { calculateTai } from '../game/rules';
 import { connection } from '../utils/connection';
 
 const WIND_CHARS: Record<string, string> = { east: '(East) \u6771', south: '(South) \u5357', west: '(West) \u897F', north: '(North) \u5317' };
-const AI_BOT_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
 const ROUND_CHARS: Record<string, string> = { east: '\u6771', south: '\u5357', west: '\u897F', north: '\u5317' };
+const WIND_ORDER: Array<'east' | 'south' | 'west' | 'north'> = ['east', 'south', 'west', 'north'];
+
+function formatChipBalance(chips: number): string {
+  return Number.isInteger(chips) ? chips.toLocaleString('en-US') : chips.toFixed(2).replace(/\.00$/, '');
+}
 
 export function GameTable() {
-  const viewportScale = useMemo(() => {
-    if (typeof window === 'undefined') return 1;
-    const vh = window.innerHeight;
-    const contentHeight = 920;
-    return Math.min(1, vh / contentHeight);
-  }, []);
-
-  const { players, wall, phase, currentPlayerIndex, message, roundWind, config, waitingForClaim, drawTile, discardTile, claimTile, passClaim, winner, discardHistory, selfDrawWin, selfDrawWinAction, passSelfDrawWin, isMultiplayer, isHost, myPlayerIndex, diceResults, lastAction, selfKongData, selfKongAction, passSelfKong, dealerCount, dealerPlayerId } = useGameStore();
+  const { players, wall, phase, currentPlayerIndex, message, roundWind, config, waitingForClaim, drawTile, discardTile, claimTile, passClaim, winner, discardHistory, selfDrawWin, selfDrawWinAction, passSelfDrawWin, isMultiplayer, isHost, myPlayerIndex, diceResults, lastAction, selfKongData, selfKongAction, passSelfKong, dealerCount, dealerPlayerId, roomPaused } = useGameStore();
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [chiSelection, setChiSelection] = useState<{ display: any[]; handTiles: any[] }[] | null>(null);
   const [inactiveWarning, setInactiveWarning] = useState<string | null>(null);
   const [kongAnim, setKongAnim] = useState(false);
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
   const lastActionKeyRef = useRef<string>('');
   const lastMoveRef = useRef<number>(Date.now());
   const discardRef = useRef<HTMLDivElement>(null);
@@ -54,13 +52,40 @@ export function GameTable() {
     }
   }, [discardHistory]);
 
+  useEffect(() => {
+    const updateCompact = () => {
+      if (typeof window === 'undefined') return;
+      setIsCompactViewport(window.matchMedia('(max-width: 640px)').matches);
+    };
+    updateCompact();
+    window.addEventListener('resize', updateCompact);
+    window.addEventListener('orientationchange', updateCompact);
+    return () => {
+      window.removeEventListener('resize', updateCompact);
+      window.removeEventListener('orientationchange', updateCompact);
+    };
+  }, []);
+
   const humanIdx = (myPlayerIndex !== undefined && myPlayerIndex !== null) ? myPlayerIndex : 0;
-  const pc = players.length || 4;
-  const rightIdx = (humanIdx + 1) % pc;
-  const topIdx = (humanIdx + 2) % pc;
-  const leftIdx = (humanIdx + 3) % pc;
   const human = players[humanIdx];
   if (!human) return null;
+  const humanSeatWind = (human.seatWind || 'east') as typeof WIND_ORDER[number];
+  const humanSeatIndex = WIND_ORDER.indexOf(humanSeatWind);
+  const seatAtOffset = (offset: number) => WIND_ORDER[(humanSeatIndex + offset + WIND_ORDER.length) % WIND_ORDER.length];
+  const bottomSeat = humanSeatWind;
+  const rightSeat = seatAtOffset(1);
+  const topSeat = seatAtOffset(2);
+  const leftSeat = seatAtOffset(3);
+  const rightPlayer = players.find(p => p.seatWind === rightSeat);
+  const topPlayer = players.find(p => p.seatWind === topSeat);
+  const leftPlayer = players.find(p => p.seatWind === leftSeat);
+  const roundNumber = Math.min(4, Math.max(1, (dealerCount || 0) + 1));
+  const getPlayerChips = (player: any) => {
+    if (typeof player?.chips === 'number' && Number.isFinite(player.chips)) return Math.max(0, Math.round(player.chips * 100) / 100);
+    return typeof config.startingChips === 'number' && Number.isFinite(config.startingChips)
+      ? Math.max(0, Math.round(config.startingChips * 100) / 100)
+      : 0;
+  };
 
   const isHumanTurn = phase === 'playing' && currentPlayerIndex === humanIdx;
   const humanClaim = waitingForClaim.eligiblePlayers.find(e => e.playerIndex === humanIdx);
@@ -85,11 +110,10 @@ export function GameTable() {
   }, [players, wall, phase, currentPlayerIndex, roundWind, config, winner]);
 
   const handleDiscard = () => {
-    if (selectedTile === null || !isHumanTurn) return;
+    if (roomPaused || selectedTile === null || !isHumanTurn) return;
     const st = useGameStore.getState();
     const hIdx = (st.myPlayerIndex ?? 0);
-    const isRemoteClient = st.isMultiplayer && !st.isHost;
-    if (isRemoteClient) {
+    if (st.isMultiplayer) {
       connection.send({ type: 'action', actionType: 'discard', data: { tileIndex: selectedTile, playerIdx: hIdx } });
     } else {
       st.discardTile(hIdx, selectedTile);
@@ -98,11 +122,12 @@ export function GameTable() {
   };
 
   const handleTileClick = (index: number) => {
-    if (!isHumanTurn) return;
+    if (roomPaused || !isHumanTurn) return;
     setSelectedTile(prev => (prev === index ? null : index));
   };
 
   const handleChiOpen = () => {
+    if (roomPaused) return;
     const tile = waitingForClaim.tile;
     if (!tile || tile.category !== 'suit') return;
     const suit = tile.suit;
@@ -127,7 +152,8 @@ export function GameTable() {
 
   const sendAction = (actionType: string, data?: any) => {
     const st = useGameStore.getState();
-    if (st.isMultiplayer && !st.isHost && connection.connected) {
+    if (st.roomPaused) return;
+    if (st.isMultiplayer && connection.connected) {
       const hIdx = (st.myPlayerIndex ?? 0);
       connection.send({ type: 'action', actionType, data: { playerIdx: hIdx, ...data } });
     }
@@ -135,7 +161,8 @@ export function GameTable() {
 
   const handleClaim = (action: string, chiTiles?: any[]) => {
     const st = useGameStore.getState();
-    if (st.isMultiplayer && !st.isHost) {
+    if (st.roomPaused) return;
+    if (st.isMultiplayer) {
       sendAction(action, { chiTiles });
     } else {
       const hIdx = (st.myPlayerIndex ?? 0);
@@ -145,7 +172,8 @@ export function GameTable() {
 
   const handlePassClaim = () => {
     const st = useGameStore.getState();
-    if (st.isMultiplayer && !st.isHost) {
+    if (st.roomPaused) return;
+    if (st.isMultiplayer) {
       sendAction('pass_claim');
     } else {
       st.passClaim();
@@ -153,70 +181,73 @@ export function GameTable() {
   };
 
   return (
-    <div className="w-full min-h-screen bg-green-900 p-1 flex flex-col">
-      <div className="flex flex-col items-center gap-1 p-1">
-        {players[topIdx] && (
+    <div className="w-full min-h-[100dvh] bg-green-900 p-0.5 sm:p-1 flex flex-col overflow-hidden pb-[calc(env(safe-area-inset-bottom)+0.25rem)]">
+      <div className="flex flex-col items-center gap-0.5 sm:gap-1 p-0.5 sm:p-1">
+        {topPlayer && (
           <>
-            <span className="text-green-300 text-xs" style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-              <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[players[topIdx].seatWind] || ""}</span>
-              {players[topIdx].name}{!AI_BOT_NAMES.includes(players[topIdx].name) && ` (P${topIdx})`}
-              {players[topIdx].id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
-              <span className="text-yellow-300 text-xs">- {playerTai[players[topIdx].id]?.totalTai ?? 0} tai</span>
+            <span className="flex flex-wrap items-center justify-center gap-x-1 gap-y-0.5 text-[9px] sm:text-xs text-green-300 text-center leading-4">
+              <span className="text-white text-[10px] sm:text-xs font-bold font-serif">{WIND_CHARS[topPlayer.seatWind] || ""}</span>
+              {topPlayer.name}
+              {topPlayer.id === dealerPlayerId && <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-yellow-400 text-black text-[8px] font-bold leading-none" title="Dealer">庄</span>}
+              <span className="text-yellow-300 text-[9px] sm:text-xs">
+                - {playerTai[topPlayer.id]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(topPlayer))} chips
+              </span>
             </span>
-            <div className="flex gap-0.5">
-              {players[topIdx].hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
+            <div className="flex gap-0.5 flex-wrap justify-center">
+              {topPlayer.hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
                 <Tile key={i} tile={t} faceDown={true} size="sm" />
               ))}
             </div>
             {/* Melds + Bonus tiles in one row */}
-            <div className="flex items-center justify-center gap-2">
-              {players[topIdx].melds.length > 0 && (
-                <div className="flex gap-1">
-                  {players[topIdx].melds.map((meld: any, i: number) => (
+            <div className="flex items-center justify-center gap-1 sm:gap-2 flex-wrap">
+              {topPlayer.melds.length > 0 && (
+                <div className="flex gap-0.5 sm:gap-1 flex-wrap justify-center">
+                  {topPlayer.melds.map((meld: any, i: number) => (
                     <MeldDisplay key={i} tiles={meld.tiles} type={meld.type} size="sm" />
                   ))}
                 </div>
               )}
-              {players[topIdx].bonusTiles && players[topIdx].bonusTiles.length > 0 && (
-                <div className="flex gap-0.5">
-                  {players[topIdx].bonusTiles.map((t: any, i: number) => (
+              {topPlayer.bonusTiles && topPlayer.bonusTiles.length > 0 && (
+                <div className="flex gap-0.5 flex-wrap justify-center">
+                  {topPlayer.bonusTiles.map((t: any, i: number) => (
                     <Tile key={"bonus-" + i} tile={t} size="md" />
                   ))}
                 </div>
               )}
             </div>
-            {currentPlayerIndex === players[topIdx].id && phase === 'playing' && <div className="flex justify-center text-yellow-400 text-lg animate-bounce mt-0.5">▲</div>}
+            {currentPlayerIndex === topPlayer.id && phase === 'playing' && <div className="flex justify-center text-yellow-400 text-lg animate-bounce mt-0.5">▲</div>}
           </>
         )}
       </div>
 
       <div className="flex-1 flex">
-        <div className="flex flex-col items-center gap-1 px-1">
-          {players[leftIdx] && (
+        <div className="flex flex-col items-center gap-0.5 sm:gap-1 px-0.5 sm:px-1 shrink-0">
+          {leftPlayer && (
             <>
-              <span className="text-green-300 text-xs font-medium">{players[leftIdx].name}</span>
-              {!AI_BOT_NAMES.includes(players[leftIdx].name) && <span className="text-green-400 text-xs font-medium"> (P{leftIdx})</span>}
-              {players[leftIdx].id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
-              <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[players[leftIdx].seatWind] || ""}</span>
-              <span className="text-yellow-300 text-xs">- {playerTai[players[leftIdx].id]?.totalTai ?? 0} tai</span>
-              <div className="flex items-start gap-3">
-                <div className="flex flex-col space-y-[-10px]">
-                  {players[leftIdx].hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
+              <span className="text-green-300 text-[9px] sm:text-xs font-medium text-center leading-4">{leftPlayer.name}</span>
+              <div className="flex items-center gap-1 leading-4">
+                {leftPlayer.id === dealerPlayerId && <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-yellow-400 text-black text-[8px] font-bold leading-none" title="Dealer">庄</span>}
+                <span className="text-white text-[10px] sm:text-xs font-bold font-serif">{WIND_CHARS[leftPlayer.seatWind] || ""}</span>
+              </div>
+              <span className="text-yellow-300 text-[9px] sm:text-xs leading-4">- {playerTai[leftPlayer.id]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(leftPlayer))} chips</span>
+              <div className="flex items-start gap-2 sm:gap-3">
+                <div className="flex flex-col -space-y-2.5">
+                  {leftPlayer.hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
                     <Tile key={i} tile={t} faceDown={true} size="sm" rotate={90} />
                   ))}
                 </div>
-                {currentPlayerIndex === players[leftIdx].id && phase === 'playing' && <div className="self-center text-yellow-400 text-lg animate-pulse">◄</div>}
-                {players[leftIdx].bonusTiles && players[leftIdx].bonusTiles.length > 0 && (
+                {currentPlayerIndex === leftPlayer.id && phase === 'playing' && <div className="self-center text-yellow-400 text-base sm:text-lg animate-pulse">◄</div>}
+                {leftPlayer.bonusTiles && leftPlayer.bonusTiles.length > 0 && (
                   <div className="flex flex-col gap-0.5 items-center">
-                    {players[leftIdx].bonusTiles.map((t: any, i: number) => (
+                    {leftPlayer.bonusTiles.map((t: any, i: number) => (
                       <Tile key={"bonus-" + i} tile={t} size="md" />
                     ))}
                   </div>
                 )}
               </div>
-              {players[leftIdx].melds.length > 0 && (
+              {leftPlayer.melds.length > 0 && (
                 <div className="flex flex-col gap-0.5 mt-1">
-                  {players[leftIdx].melds.map((meld: any, i: number) => (
+                  {leftPlayer.melds.map((meld: any, i: number) => (
                     <MeldDisplay key={i} tiles={meld.tiles} type={meld.type} size="sm" />
                   ))}
                 </div>
@@ -224,10 +255,14 @@ export function GameTable() {
             </>
           )}
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center p-2">
+        <div className="flex-1 flex flex-col items-center justify-center p-1 sm:p-2 min-w-0">
           {discardHistory.length > 0 ? (
-            <div className="p-2 bg-green-800/30 rounded-lg w-full max-w-[380px]">
-              <div ref={discardRef} className="flex gap-1 flex-wrap overflow-y-auto" style={{ maxWidth: "374px", maxHeight: "120px" }}>
+            <div className="p-1.5 sm:p-2 bg-green-800/30 rounded-lg w-full max-w-[420px]">
+              <div
+                ref={discardRef}
+                className="flex gap-1 flex-wrap overflow-y-auto"
+                style={{ maxWidth: "100%", maxHeight: isCompactViewport ? "88px" : "120px" }}
+              >
                 {discardHistory.map((t: any, i: number) => (
                   <Tile key={i} tile={t} size="sm" highlight={i === discardHistory.length - 1} />
                 ))}
@@ -241,7 +276,7 @@ export function GameTable() {
 
           {kongAnim && (
             <div className="text-center my-1">
-              <span className="text-yellow-300 font-bold text-lg bg-yellow-700/50 px-4 py-1.5 rounded-lg inline-block animate-bounce border border-yellow-500/50">
+              <span className="text-yellow-300 font-bold text-base sm:text-lg bg-yellow-700/50 px-3 sm:px-4 py-1.5 rounded-lg inline-block animate-bounce border border-yellow-500/50">
                 🀄 Kong!
               </span>
             </div>
@@ -254,42 +289,43 @@ export function GameTable() {
             </div>
           )}
           {(lastAction && isMultiplayer) ? (
-            <div className="text-green-300 text-sm text-center mt-1">{lastAction}</div>
+            <div className="text-green-300 text-xs sm:text-sm text-center mt-1 px-1">{lastAction}</div>
           ) : (message && !isMultiplayer) ? (
-            <div className="text-yellow-300 text-base font-bold text-center mt-2">{message}</div>
+            <div className="text-yellow-300 text-sm sm:text-base font-bold text-center mt-2 px-1">{message}</div>
           ) : null}
-          <div className="text-green-300/70 text-sm text-center mt-1">
-            Wall: {wall.length} | {roundWind.charAt(0).toUpperCase() + roundWind.slice(1)} ({ROUND_CHARS[roundWind] || '?'}) round | {config.taiThreshold === 0 ? '0 tai' : config.taiThreshold + ' tai'}
+            <div className="text-green-300/70 text-[10px] sm:text-sm text-center mt-1 px-1">
+            Wall: {wall.length} | Round {roundNumber}/4 | {roundWind.charAt(0).toUpperCase() + roundWind.slice(1)} ({ROUND_CHARS[roundWind] || '?'}) round | {config.taiThreshold === 0 ? '0 tai' : config.taiThreshold + ' tai'}
             {config.feiCount > 0 && ' | Fei: ' + config.feiCount}
           </div>
         </div>
 
-        <div className="flex flex-col items-center gap-1 px-1">
-          {players[rightIdx] && (
+        <div className="flex flex-col items-center gap-0.5 sm:gap-1 px-0.5 sm:px-1 shrink-0">
+          {rightPlayer && (
             <>
-              <span className="text-green-300 text-xs font-medium">{players[rightIdx].name}</span>
-              {!AI_BOT_NAMES.includes(players[rightIdx].name) && <span className="text-green-400 text-xs font-medium"> (P{rightIdx})</span>}
-              {players[rightIdx].id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
-              <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[players[rightIdx].seatWind] || ""}</span>
-              <span className="text-yellow-300 text-xs">- {playerTai[players[rightIdx].id]?.totalTai ?? 0} tai</span>
-              <div className="flex items-start gap-3">
-                {players[rightIdx].bonusTiles && players[rightIdx].bonusTiles.length > 0 && (
+              <span className="text-green-300 text-[9px] sm:text-xs font-medium text-center leading-4">{rightPlayer.name}</span>
+              <div className="flex items-center gap-1 leading-4">
+                {rightPlayer.id === dealerPlayerId && <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-yellow-400 text-black text-[8px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
+                <span className="text-white text-[10px] sm:text-xs font-bold font-serif">{WIND_CHARS[rightPlayer.seatWind] || ""}</span>
+              </div>
+              <span className="text-yellow-300 text-[9px] sm:text-xs leading-4">- {playerTai[rightPlayer.id]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(rightPlayer))} chips</span>
+              <div className="flex items-start gap-2 sm:gap-3">
+                {rightPlayer.bonusTiles && rightPlayer.bonusTiles.length > 0 && (
                   <div className="flex flex-col gap-0.5 items-center">
-                    {players[rightIdx].bonusTiles.map((t: any, i: number) => (
+                    {rightPlayer.bonusTiles.map((t: any, i: number) => (
                       <Tile key={"bonus-" + i} tile={t} size="md" />
                     ))}
                   </div>
                 )}
-                {currentPlayerIndex === players[rightIdx].id && phase === 'playing' && <div className="self-center text-yellow-400 text-lg animate-pulse">►</div>}
-                <div className="flex flex-col space-y-[-10px]">
-                  {players[rightIdx].hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
+                {currentPlayerIndex === rightPlayer.id && phase === 'playing' && <div className="self-center text-yellow-400 text-base sm:text-lg animate-pulse">►</div>}
+                <div className="flex flex-col -space-y-2.5">
+                  {rightPlayer.hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
                     <Tile key={i} tile={t} faceDown={true} size="sm" rotate={-90} />
                   ))}
                 </div>
               </div>
-              {players[rightIdx].melds.length > 0 && (
+              {rightPlayer.melds.length > 0 && (
                 <div className="flex flex-col gap-0.5 mt-1">
-                  {players[rightIdx].melds.map((meld: any, i: number) => (
+                  {rightPlayer.melds.map((meld: any, i: number) => (
                     <MeldDisplay key={i} tiles={meld.tiles} type={meld.type} size="sm" />
                   ))}
                 </div>
@@ -299,81 +335,88 @@ export function GameTable() {
         </div>
       </div>
 
-      <div className="bg-green-800/40 rounded-lg p-2">
-        {currentPlayerIndex === humanIdx && phase === 'playing' && <div className="flex justify-center text-yellow-400 text-lg animate-bounce mb-1">▼</div>}
-        {chiSelection && (
+      <div className="bg-green-800/40 rounded-lg p-1.5 sm:p-2">
+        {currentPlayerIndex === humanIdx && phase === 'playing' && !roomPaused && <div className="flex justify-center text-yellow-400 text-lg animate-bounce mb-1">▼</div>}
+          {!roomPaused && chiSelection && (
           <div className="flex flex-col items-center gap-1 mb-2">
             <div className="text-yellow-300 text-xs font-bold">Choose Chi tiles:</div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center justify-center gap-2">
               {chiSelection.map((option, i) => (
-                <button key={i} onClick={() => handleChiSelect(option)} className="flex gap-0.5 p-1 bg-green-700 rounded hover:bg-green-600 border border-green-500">
+                <button key={i} onClick={() => handleChiSelect(option)} className="flex gap-0.5 p-1.5 bg-green-700 rounded-lg hover:bg-green-600 border border-green-500">
                   {option.display.map((t: any, j: number) => (
                     <Tile key={j} tile={t} size="sm" />
                   ))}
                 </button>
               ))}
-              <button onClick={() => setChiSelection(null)} className="px-2 py-1 bg-gray-700 rounded text-gray-300 text-xs hover:bg-gray-600">Cancel</button>
+              <button onClick={() => setChiSelection(null)} className="px-3 py-2 bg-gray-700 rounded-lg text-gray-300 text-xs hover:bg-gray-600 min-h-11">Cancel</button>
             </div>
           </div>
         )}
-        <div className="flex items-center justify-center gap-2 mb-2">
+        <div className="flex items-center justify-center gap-1.5 mb-2 flex-wrap">
           {human.melds.length > 0 && (
-            <div className="flex gap-1">
+            <div className="flex gap-0.5 sm:gap-1 flex-wrap justify-center">
               {human.melds.map((meld: any, i: number) => (
                 <MeldDisplay key={i} tiles={meld.tiles} type={meld.type} size="sm" />
               ))}
             </div>
           )}
           {human.bonusTiles && human.bonusTiles.length > 0 && (
-            <div className="flex gap-1">
+            <div className="flex gap-0.5 sm:gap-1 flex-wrap justify-center">
               {human.bonusTiles.map((t: any, i: number) => (
-                <Tile key={"bonus-" + i} tile={t} size="md" />
+                <Tile key={"bonus-" + i} tile={t} size={isCompactViewport ? "sm" : "md"} />
               ))}
             </div>
           )}
         </div>
 
-        <div className="flex items-center justify-center gap-1 mb-1">
-          <span className="text-green-300 text-xs">You (P{humanIdx})</span>
-          {human.id === dealerPlayerId && <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 text-black text-[9px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
-          <span style={{ color: "#fff", fontSize: "12px", fontWeight: "bold", fontFamily: "serif" }}>{WIND_CHARS[human.seatWind]}</span>
-          <span className="text-yellow-300 text-xs">- {playerTai[humanIdx]?.totalTai ?? 0} tai</span>
+        <div className="flex items-center justify-center gap-1 mb-1 flex-wrap text-center leading-4">
+          <span className="text-green-300 text-[9px] sm:text-xs">You (P{humanIdx})</span>
+          {human.id === dealerPlayerId && <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-yellow-400 text-black text-[8px] font-bold ml-0.5 leading-none" title="Dealer">庄</span>}
+          <span className="text-white text-[10px] sm:text-xs font-bold font-serif">{WIND_CHARS[bottomSeat]}</span>
+          <span className="text-yellow-300 text-[9px] sm:text-xs">- {playerTai[humanIdx]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(human))} chips</span>
         </div>
-        <div className="flex gap-1 flex-wrap justify-center">
+        <div className="flex gap-1 flex-nowrap overflow-x-auto justify-start sm:justify-center px-1 pb-1 w-full max-w-full [scrollbar-width:none] [-ms-overflow-style:none]">
           {human.hand.filter((t: any) => !isBonus(t)).map((tile: any, idx: number) => {
             const actualIdx = human.hand.indexOf(tile);
             return (
-              <Tile key={'tile-' + idx} tile={tile} selected={selectedTile === actualIdx} onClick={() => handleTileClick(actualIdx)} size="md" />
+              <Tile key={'tile-' + idx} tile={tile} selected={selectedTile === actualIdx} onClick={() => handleTileClick(actualIdx)} size={isCompactViewport ? 'sm' : 'md'} />
             );
           })}
           {human.hand.length === 0 && (
-            <span className="text-green-400/50 text-sm">No tiles</span>
+            <span className="text-green-400/50 text-sm whitespace-nowrap">No tiles</span>
           )}
         </div>
 
-        <div className="flex gap-2 justify-center mt-2 flex-wrap">
-          {phase === 'playing' && !hasClaimOptions && (
+        {roomPaused && (
+          <div className="mb-2 text-center">
+            <span className="inline-flex items-center rounded-full border border-red-400/60 bg-red-900/70 px-3 py-1 text-red-100 text-xs font-bold">
+              Room paused because a player left
+            </span>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-2 justify-center mt-2 sm:flex sm:flex-wrap">
+          {phase === 'playing' && !hasClaimOptions && !roomPaused && (
             <>
               {selfDrawWin && (
                 <>
                   <button onClick={() => {
-                    if (useGameStore.getState().isMultiplayer && !useGameStore.getState().isHost) {
+                    if (useGameStore.getState().isMultiplayer) {
                       connection.send({ type: 'action', actionType: 'self_draw_win', data: { playerIdx: (useGameStore.getState().myPlayerIndex ?? 0) } });
                     } else {
                       useGameStore.getState().selfDrawWinAction(useGameStore.getState().myPlayerIndex ?? 0);
                     }
-                  }} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm animate-pulse">Win!</button>
+                  }} className="min-h-11 px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm animate-pulse w-full sm:w-auto">Win!</button>
                   <button onClick={() => {
-                    if (useGameStore.getState().isMultiplayer && !useGameStore.getState().isHost) {
+                    if (useGameStore.getState().isMultiplayer) {
                       connection.send({ type: 'action', actionType: 'pass_self_draw', data: { playerIdx: (useGameStore.getState().myPlayerIndex ?? 0) } });
                     } else {
                       useGameStore.getState().passSelfDrawWin();
                     }
-                  }} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm">Pass</button>
+                  }} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm w-full sm:w-auto">Pass</button>
                 </>
               )}
               {!selfDrawWin && isHumanTurn && selectedTile !== null && !isFei(human.hand[selectedTile]) && (
-                <button onClick={handleDiscard} className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold text-sm transition-colors">Discard</button>
+                <button onClick={handleDiscard} className="min-h-11 px-3 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold text-sm transition-colors w-full sm:w-auto">Discard</button>
               )}
               {!selfDrawWin && selfKongData && isHumanTurn && (
                 <>
@@ -382,39 +425,39 @@ export function GameTable() {
                     setTimeout(() => setKongAnim(false), 600);
                     const st = useGameStore.getState();
                     if (selfKongData.meldIndex >= 0) {
-                      if (st.isMultiplayer && !st.isHost) {
+                      if (st.isMultiplayer) {
                         connection.send({ type: 'action', actionType: 'self_kong', data: { playerIdx: (st.myPlayerIndex ?? 0), meldIndex: selfKongData.meldIndex, handTileIndex: selfKongData.handTileIndex } });
                       } else {
                         st.selfKongAction(st.myPlayerIndex ?? 0, selfKongData.meldIndex, selfKongData.handTileIndex);
                       }
                     } else {
-                      if (st.isMultiplayer && !st.isHost) {
+                      if (st.isMultiplayer) {
                         connection.send({ type: 'action', actionType: 'concealed_kong', data: { playerIdx: (st.myPlayerIndex ?? 0), tileIndex: selfKongData.handTileIndex } });
                       } else {
                         st.selfKongAction(st.myPlayerIndex ?? 0, -1, selfKongData.handTileIndex);
                       }
                     }
                     st.passSelfKong();
-                  }} className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse">Kong</button>
+                  }} className="min-h-11 px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Kong</button>
                   <button onClick={() => {
                     const st = useGameStore.getState();
-                    if (st.isMultiplayer && !st.isHost) {
+                    if (st.isMultiplayer) {
                       connection.send({ type: 'action', actionType: 'pass_self_kong', data: { playerIdx: (st.myPlayerIndex ?? 0) } });
                     } else {
                       st.passSelfKong();
                     }
-                  }} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm">Pass</button>
+                  }} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm w-full sm:w-auto">Pass</button>
                 </>
               )}
             </>
           )}
-          {hasClaimOptions && (
+          {hasClaimOptions && !roomPaused && (
             <>
-              {eligibleActions.includes('win') && <button onClick={() => handleClaim('win')} className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse">Win!</button>}
-              {eligibleActions.includes('kong') && <button onClick={() => handleClaim('kong')} className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse">Kong</button>}
-              {eligibleActions.includes('pung') && <button onClick={() => handleClaim('pung')} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse">Pung</button>}
-              {eligibleActions.includes('chi') && chiSelection === null && <button onClick={handleChiOpen} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse">Chi</button>}
-              <button onClick={handlePassClaim} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm transition-colors">Pass</button>
+              {eligibleActions.includes('win') && <button onClick={() => handleClaim('win')} className="min-h-11 px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Win!</button>}
+              {eligibleActions.includes('kong') && <button onClick={() => handleClaim('kong')} className="min-h-11 px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Kong</button>}
+              {eligibleActions.includes('pung') && <button onClick={() => handleClaim('pung')} className="min-h-11 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Pung</button>}
+              {eligibleActions.includes('chi') && chiSelection === null && <button onClick={handleChiOpen} className="min-h-11 px-3 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Chi</button>}
+              <button onClick={handlePassClaim} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm transition-colors w-full sm:w-auto">Pass</button>
             </>
           )}
         </div>

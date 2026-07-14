@@ -9,15 +9,15 @@ const TUTORIAL_STEPS = [
   },
   {
     title: "Fei (Joker)",
-    content: "Fei tiles are jokers that can substitute for ANY tile to complete a hand. They can be used for sequences, pungs, kongs, and the eyes. Fei is not a bonus tile, goes into your hand when drawn, and can never be discarded."
+    content: "Fei tiles are jokers that can substitute for ANY tile to complete a hand. They can be used for sequences, pungs, kongs, and the eyes. Fei is not a bonus tile, goes into your hand when drawn, and can never be discarded. Fei cannot be used to call another player’s discard for chi, pung, or kong."
   },
   {
     title: "Dealing",
-    content: "Each player starts with 13 tiles (dealer gets 14). The dealer (East) begins by discarding one tile face up to the center. Play proceeds clockwise. The game uses a minimum of 4 tai to win, but this can be configured."
+    content: "Each player starts with 13 tiles (dealer gets 14). The dealer (East) begins by discarding one tile face up to the center. Turn order follows East -> South -> West -> North. The game uses a minimum of 4 tai to win, but this can be configured."
   },
   {
     title: "Drawing and Discarding",
-    content: "On your turn, draw a tile from the wall, then discard one tile from your hand face up to the center. You cannot discard Fei tiles. The game continues until someone wins or the wall is exhausted (draw game)."
+    content: "On your turn, draw a tile from the wall, then discard one tile from your hand face up to the center. You cannot discard Fei tiles. Flower, animal, and kong replacements come from the back of the same wall. The game continues until someone wins, or the wall reaches 15 tiles. If a kong happened in that round and the wall reaches 15, the round ends as a kong round and the dealer passes to the next player."
   },
   {
     title: "Calling Tiles",
@@ -29,11 +29,11 @@ const TUTORIAL_STEPS = [
   },
   {
     title: "Tai Scoring",
-    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +4 tai\nAll Pungs: +3 tai\nBig Three Dragons: +10 tai (automatic win)\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nThe minimum tai to win is configurable."
+    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +4 tai\nAll Pungs: +3 tai\nBig Three Dragons: +10 tai (automatic win)\nThirteen Wonders: +13 tai (automatic win)\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nSpecial hands use their own maximum tai and do not stack with smaller pattern bonuses. The minimum tai to win is configurable."
   },
   {
     title: "Winning",
-    content: "Win by completing 4 melds + 1 pair. You can win off a discard (someone else's tile completes your hand) or by self-draw (drawing the winning tile yourself). Self-draw gives +1 tai. After winning, the hand is scored and the game resets."
+    content: "Win by completing 4 melds + 1 pair. You can win off a discard (someone else's tile completes your hand) or by self-draw (drawing the winning tile yourself). Self-draw gives +1 tai. If you are waiting on an entire suit, that suit's discard cannot be claimed for a win. After winning, the hand is scored and the game resets."
   },
   {
     title: "Tips & Strategy",

@@ -77,26 +77,28 @@ export function DiceRoll({ onComplete, onCancel }: DiceRollProps) {
     setTimeout(() => {
       if (timerRef.current) clearInterval(timerRef.current);
 
-      const [d1, d2, d3] = rollD3();
-      const humanTotal = d1 + d2 + d3;
-      setDice([d1, d2, d3]);
+      let humanTotal = 0;
+      let aiTotals: number[] = [];
+      let allTotals: number[] = [];
+      while (true) {
+        const [d1, d2, d3] = rollD3();
+        humanTotal = d1 + d2 + d3;
+        setDice([d1, d2, d3]);
 
-      const aiTotals = [
-        rollD3().reduce((a, b) => a + b, 0),
-        rollD3().reduce((a, b) => a + b, 0),
-        rollD3().reduce((a, b) => a + b, 0),
-      ];
-
-      const allTotals = [humanTotal, ...aiTotals];
-      let maxIdx = 0;
-      for (let i = 1; i < allTotals.length; i++) {
-        if (allTotals[i] > allTotals[maxIdx]) maxIdx = i;
+        aiTotals = [
+          rollD3().reduce((a, b) => a + b, 0),
+          rollD3().reduce((a, b) => a + b, 0),
+          rollD3().reduce((a, b) => a + b, 0),
+        ];
+        allTotals = [humanTotal, ...aiTotals];
+        if (new Set(allTotals).size === allTotals.length) break;
       }
 
-      const humanWindIdx = (4 - maxIdx) % 4;
-      const humanWind = WINDS[humanWindIdx];
+      const sortedTotals = [...allTotals].sort((a, b) => b - a);
+      const humanRank = sortedTotals.indexOf(humanTotal);
+      const humanWind = WINDS[humanRank];
 
-      setResult({ humanWind, humanTotal, aiTotals, humanIsDealer: maxIdx === 0 });
+      setResult({ humanWind, humanTotal, aiTotals, humanIsDealer: humanRank === 0 });
       setPhase('result');
     }, 2500);
   };
@@ -141,7 +143,7 @@ export function DiceRoll({ onComplete, onCancel }: DiceRollProps) {
               <p className="text-green-300 text-sm mb-1 animate-pulse">Highest roll! You are the dealer.</p>
             )}
 
-            <div className="bg-green-700/40 rounded-lg p-4 mb-4">
+            <div className="bg-cyan-700/20 border border-cyan-300/50 rounded-lg p-4 mb-4 ring-1 ring-cyan-300/30">
               <div style={{
                 fontSize: '48px',
                 color: WIND_COLORS[result.humanWind],
@@ -151,7 +153,7 @@ export function DiceRoll({ onComplete, onCancel }: DiceRollProps) {
               }}>
                 {WIND_CHARS[result.humanWind]}
               </div>
-              <p className="text-green-100 text-base">
+              <p className="text-cyan-50 text-base">
                 You sit at: <span className="text-yellow-300 font-bold">{result.humanWind}</span>
               </p>
             </div>

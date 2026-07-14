@@ -13,6 +13,12 @@ export function Home() {
   const startGame = useGameStore(s => s.startGame);
   const config = useGameStore(s => s.config);
   const nextDealerPlayerId = useGameStore(s => s.nextDealerPlayerId);
+  const payoutOptions = [
+    { value: 'none', label: 'None' },
+    { value: '010_020', label: '$0.10 / $0.20' },
+    { value: '030_060', label: '$0.30 / $0.60' },
+    { value: '1_2', label: '$1 / $2' },
+  ] as const;
 
   const updateConfig = (patch: Partial<typeof config>) => {
     useGameStore.setState({ config: { ...config, ...patch } });
@@ -72,7 +78,7 @@ export function Home() {
         <div className="space-y-5">
           {/* Tai Threshold */}
           <div>
-            <label className="text-green-300 text-sm block mb-1">Tai Threshold (Minimum to win/zimo)</label>
+            <label className="text-green-300 text-sm block mb-1">Tai Threshold (Minimum to Zi Mo)</label>
             <div className="flex gap-2 items-center">
               <input
                 type="range"
@@ -104,6 +110,23 @@ export function Home() {
             <p className="text-[10px] text-green-400/50 mt-0.5">Only in multiples of 4 (0, 4, 8, 12, 16, 20)</p>
           </div>
 
+          {/* Payout Table */}
+          <div>
+            <label className="text-green-300 text-sm block mb-1">Payout Table</label>
+            <select
+              value={config.payoutTable}
+              onChange={(e) => updateConfig({ payoutTable: e.target.value as typeof config.payoutTable })}
+              className="w-full bg-green-900/50 border border-green-600 rounded-lg px-3 py-2 text-green-200 text-sm outline-none focus:border-yellow-500"
+            >
+              {payoutOptions.map(option => (
+                <option key={option.value} value={option.value} className="bg-green-950 text-green-100">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] text-green-400/50 mt-0.5">Self-draw uses the second value and settles against all other players.</p>
+          </div>
+
           {/* Starting Chips */}
           <div>
             <label className="text-green-300 text-sm block mb-1">Starting Chips</label>
@@ -119,6 +142,24 @@ export function Home() {
               <span className="text-yellow-300 font-bold w-12 text-center">chips</span>
             </div>
             <p className="text-[10px] text-green-400/50 mt-0.5">Leave blank for no chip amount yet.</p>
+          </div>
+
+          {/* Max Cap Tai */}
+          <div>
+            <label className="text-green-300 text-sm block mb-1">Max Cap Tai</label>
+            <div className="flex gap-2 items-center">
+              <input
+                type="range"
+                min="1"
+                max="18"
+                step="1"
+                value={config.maxTai ?? 10}
+                onChange={(e) => updateConfig({ maxTai: parseInt(e.target.value, 10) })}
+                className="flex-1 accent-yellow-500"
+              />
+              <span className="text-yellow-300 font-bold w-8 text-center">{config.maxTai ?? 10}</span>
+            </div>
+            <p className="text-[10px] text-green-400/50 mt-0.5">Caps normal payout settlement only. Special hands use the separate special cap setting.</p>
           </div>
 
           {/* Shooter Toggle */}
@@ -140,6 +181,44 @@ export function Home() {
                 No
               </button>
             </div>
+          </div>
+
+          {/* Caps Max Tai for Special */}
+          <div>
+            <label className="text-green-300 text-sm block mb-1">Caps Max Tai for Special</label>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <button
+                type="button"
+                onClick={() => updateConfig({ specialTaiCapEnabled: true, specialTaiCap: Math.min(config.specialTaiCap ?? 18, 18) })}
+                className={`py-2 rounded-lg font-bold text-sm transition-colors ${config.specialTaiCapEnabled ? 'bg-yellow-600 text-white' : 'bg-green-900/50 text-green-200 border border-green-600 hover:bg-green-800/70'}`}
+              >
+                On
+              </button>
+              <button
+                type="button"
+                onClick={() => updateConfig({ specialTaiCapEnabled: false })}
+                className={`py-2 rounded-lg font-bold text-sm transition-colors ${!config.specialTaiCapEnabled ? 'bg-yellow-600 text-white' : 'bg-green-900/50 text-green-200 border border-green-600 hover:bg-green-800/70'}`}
+              >
+                Off
+              </button>
+            </div>
+            {config.specialTaiCapEnabled && (
+              <div className="flex gap-2 items-center">
+                <input
+                  type="range"
+                  min="1"
+                  max="18"
+                  step="1"
+                  value={config.specialTaiCap ?? 18}
+                  onChange={(e) => updateConfig({ specialTaiCapEnabled: true, specialTaiCap: parseInt(e.target.value, 10) })}
+                  className="flex-1 accent-yellow-500"
+                />
+                <span className="text-yellow-300 font-bold w-8 text-center">{config.specialTaiCap ?? 18}</span>
+              </div>
+            )}
+            <p className="text-[10px] text-green-400/50 mt-0.5">
+              On caps special hands up to 18 tai. Off leaves special hands uncapped.
+            </p>
           </div>
         </div>
 
