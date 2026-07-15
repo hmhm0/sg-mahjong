@@ -50,14 +50,19 @@ export function JoinGame() {
       const upperCode = code.toUpperCase();
       const storedRoom = connection.getStoredRoomInfo();
       if (storedRoom && storedRoom.code === upperCode && storedRoom.playerIndex > 0) {
-        connection.send({ type: 'rejoin_room', code: upperCode, playerIndex: storedRoom.playerIndex });
+        connection.send({
+          type: 'rejoin_room',
+          code: upperCode,
+          playerIndex: storedRoom.playerIndex,
+          reconnectToken: storedRoom.reconnectToken,
+        });
       } else {
         connection.send({ type: 'join_room', code: upperCode });
       }
 
       cleanupConnectionListeners();
       const unsubRoomJoined = connection.on('room_joined', (msg) => {
-        connection.setRoomInfo(msg.code, msg.playerIndex);
+        connection.setRoomInfo(msg.code, msg.playerIndex, msg.reconnectToken);
         const defaultName = `Player ${msg.playerIndex + 1}`;
         const finalName = playerName.trim() || defaultName;
         connection.send({ type: 'player_name', playerIndex: msg.playerIndex, name: finalName });
@@ -92,6 +97,7 @@ export function JoinGame() {
           });
         }
         if (msg.started) {
+          startedRef.current = true;
           setStatus('Game in progress...');
         }
         useGameStore.setState({
@@ -167,20 +173,6 @@ export function JoinGame() {
         }
       });
 
-      const unsubStateUpdate = connection.on('state_update', (msg) => {
-        startedRef.current = true;
-        track('multiplayer_state_received', { room_code: connection.roomCode, player_index: connection.playerIndex });
-        const state = msg.state;
-        state.isMultiplayer = true;
-        state.isHost = false;
-        state.myPlayerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
-        const pending = useGameStore.getState().multiplayerStartPending;
-        useGameStore.setState({
-          ...state,
-          multiplayerStartPending: pending,
-        });
-      });
-
       const unsubDiceResults = connection.on('dice_results', (msg: any) => {
         const results = {
           dice: msg.dice as [number, number, number][],
@@ -222,7 +214,6 @@ export function JoinGame() {
         unsubPlayerName,
         unsubGameStarted,
         unsubReady,
-        unsubStateUpdate,
         unsubDiceResults,
         unsubDisconnected,
         unsubReconnecting,

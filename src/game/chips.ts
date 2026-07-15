@@ -25,6 +25,19 @@ export interface ChipSettlementSummary {
   shooterIndex: number | null;
 }
 
+export interface ChipSettlementTransfer {
+  playerIndex: number;
+  delta: number;
+  isWinner: boolean;
+}
+
+export interface ChipStanding {
+  playerIndex: number;
+  playerId: number;
+  name: string;
+  chips: number;
+}
+
 interface PayoutRow {
   nonShooterPerTai: number;
   shooterPerTai: number;
@@ -60,16 +73,16 @@ const PAYOUT_ROWS: Record<Exclude<PayoutTableKey, 'none'>, PayoutRow[]> = {
     { nonShooterPerTai: 13107.2, shooterPerTai: 52428.8, selfDrawPerTai: 26214.4 },
   ],
   '030_060': [
-    { nonShooterPerTai: 1, shooterPerTai: 2, selfDrawPerTai: 2 },
-    { nonShooterPerTai: 2, shooterPerTai: 3, selfDrawPerTai: 3 },
-    { nonShooterPerTai: 3, shooterPerTai: 5, selfDrawPerTai: 5 },
-    { nonShooterPerTai: 5, shooterPerTai: 10, selfDrawPerTai: 10 },
-    { nonShooterPerTai: 10, shooterPerTai: 20, selfDrawPerTai: 20 },
-    { nonShooterPerTai: 20, shooterPerTai: 39, selfDrawPerTai: 39 },
-    { nonShooterPerTai: 39, shooterPerTai: 77, selfDrawPerTai: 77 },
-    { nonShooterPerTai: 77, shooterPerTai: 154, selfDrawPerTai: 154 },
-    { nonShooterPerTai: 154, shooterPerTai: 308, selfDrawPerTai: 308 },
-    { nonShooterPerTai: 308, shooterPerTai: 615, selfDrawPerTai: 615 },
+    { nonShooterPerTai: 1, shooterPerTai: 4, selfDrawPerTai: 2 },
+    { nonShooterPerTai: 2, shooterPerTai: 7, selfDrawPerTai: 3 },
+    { nonShooterPerTai: 3, shooterPerTai: 11, selfDrawPerTai: 5 },
+    { nonShooterPerTai: 5, shooterPerTai: 20, selfDrawPerTai: 10 },
+    { nonShooterPerTai: 10, shooterPerTai: 40, selfDrawPerTai: 20 },
+    { nonShooterPerTai: 20, shooterPerTai: 79, selfDrawPerTai: 39 },
+    { nonShooterPerTai: 39, shooterPerTai: 155, selfDrawPerTai: 77 },
+    { nonShooterPerTai: 77, shooterPerTai: 308, selfDrawPerTai: 154 },
+    { nonShooterPerTai: 154, shooterPerTai: 616, selfDrawPerTai: 308 },
+    { nonShooterPerTai: 308, shooterPerTai: 1231, selfDrawPerTai: 615 },
     { nonShooterPerTai: 615, shooterPerTai: 2459, selfDrawPerTai: 1229 },
     { nonShooterPerTai: 1229, shooterPerTai: 4916, selfDrawPerTai: 2458 },
     { nonShooterPerTai: 2458, shooterPerTai: 9832, selfDrawPerTai: 4916 },
@@ -116,7 +129,48 @@ export function getPayoutTableLabel(payoutTable: PayoutTableKey): string {
 
 export function formatPayoutAmount(amount: number): string {
   const rounded = normalizeChipAmount(amount);
-  return Number.isInteger(rounded) ? `$${rounded.toLocaleString('en-US')}` : `$${rounded.toFixed(2)}`;
+  const absolute = Math.abs(rounded);
+  const formatted = Number.isInteger(absolute) ? absolute.toLocaleString('en-US') : absolute.toFixed(2);
+  return rounded < 0 ? `-$${formatted}` : `$${formatted}`;
+}
+
+export function getChipSettlementRuleText(summary: ChipSettlementSummary): string {
+  if (summary.mode === 'self_draw') {
+    return `Self-draw pay: each opponent pays ${formatPayoutAmount(summary.selfDrawPerTai)} for ${summary.tai} tai.`;
+  }
+  if (summary.settlementStyle === 'shooter') {
+    return `Shooter pay: only the shooter pays ${formatPayoutAmount(summary.shooterPerTai)} for ${summary.tai} tai.`;
+  }
+  return `Non-shooter pay: each non-discarder pays ${formatPayoutAmount(summary.nonShooterPerTai)} and the discarder pays ${formatPayoutAmount(summary.selfDrawPerTai)} for ${summary.tai} tai.`;
+}
+
+export function getChipSettlementTransfers(summary: ChipSettlementSummary): ChipSettlementTransfer[] {
+  return summary.playerDeltas
+    .filter(entry => entry.delta !== 0)
+    .map(entry => ({
+      ...entry,
+      isWinner: entry.playerIndex === summary.winnerIndex,
+    }));
+}
+
+export function isChipMatchOver(players: Player[], config: GameConfig): boolean {
+  if (!config.economyEnabled || config.payoutTable === 'none') return false;
+  return players.some(player =>
+    typeof player.chips === 'number' &&
+    Number.isFinite(player.chips) &&
+    player.chips <= 0
+  );
+}
+
+export function getChipStandings(players: Player[]): ChipStanding[] {
+  return players
+    .map((player, playerIndex) => ({
+      playerIndex,
+      playerId: player.id,
+      name: player.name,
+      chips: typeof player.chips === 'number' && Number.isFinite(player.chips) ? player.chips : 0,
+    }))
+    .sort((a, b) => b.chips - a.chips || a.playerIndex - b.playerIndex);
 }
 
 function getPayoutRow(payoutTable: Exclude<PayoutTableKey, 'none'>, tai: number): PayoutRow {
@@ -141,7 +195,9 @@ export function settleRoundChips(
   const maxTai = Math.max(1, Math.floor(config.maxTai ?? MAX_TAI));
   const payoutTai = Math.max(1, Math.floor(payoutTaiOverride ?? Math.min(MAX_TAI, rawTai, maxTai)));
   const row = getPayoutRow(config.payoutTable, payoutTai);
-  const settlementStyle: SettlementStyle = config.chipSettlementMode === 'shooter' ? 'shooter' : 'default';
+  // The menu-facing Shooter toggle is authoritative. chipSettlementMode remains
+  // in room snapshots for compatibility with existing multiplayer state.
+  const settlementStyle: SettlementStyle = config.shooterEnabled ? 'shooter' : 'default';
   const playerDeltas: ChipDelta[] = players.map((_, playerIndex) => ({ playerIndex, delta: 0 }));
 
   if (shooterIndex !== null && shooterIndex >= 0) {

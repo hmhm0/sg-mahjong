@@ -8,8 +8,9 @@ import { Rules } from './pages/Rules';
 import { HostGame } from './pages/HostGame';
 import { JoinGame } from './pages/JoinGame';
 import { navigate } from './utils/navigation';
-import { initAnalytics, trackPageView } from './utils/analytics';
+import { initAnalytics, track, trackPageView } from './utils/analytics';
 import { MultiplayerDiceOverlay } from './components/MultiplayerDiceOverlay';
+import { buildMultiplayerStatePatch, shouldAcceptMultiplayerState } from './utils/multiplayerState';
 
 const SITE_NAME = 'Singapore Mahjong';
 const SITE_URL = 'https://sgmahjong.app';
@@ -90,7 +91,7 @@ export default function App() {
   const playerLeft = useGameStore(s => s.playerLeft);
   const roomPaused = useGameStore(s => s.roomPaused);
   const [hostDismissed, setHostDismissed] = useState(false);
-  const [playerLeftCountdown, setPlayerLeftCountdown] = useState(5);
+  const [roomClosedReason, setRoomClosedReason] = useState<string | null>(null);
   const [playerLeftDismissed, setPlayerLeftDismissed] = useState(false);
   const [route, setRoute] = useState(getRoute);
 
@@ -217,7 +218,6 @@ export default function App() {
         roomPaused: true,
         roomPauseReason: { type: 'player_left', playerIndex: msg.playerIndex },
       });
-      setPlayerLeftCountdown(5);
       setPlayerLeftDismissed(false);
     });
     return () => {
@@ -228,13 +228,24 @@ export default function App() {
   useEffect(() => {
     const unsub = connection.on('room_closed', (msg) => {
       connection.markRoomClosed();
+      setRoomClosedReason(msg?.reason || 'room_closed');
+      setHostDismissed(false);
       const s = useGameStore.getState();
       if (s.phase === 'playing' || s.phase === 'finished' || s.isMultiplayer) {
         useGameStore.setState({ hostDisconnected: true, playerLeft: null, roomPaused: false, roomPauseReason: null });
       }
-      if (msg?.reason === 'host_disconnect') {
-        setHostDismissed(false);
-      }
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsub = connection.on('room_recreated', (msg) => {
+      if (!msg?.code) return;
+      const playerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
+      connection.setRoomInfo(msg.code, playerIndex);
+      setRoomClosedReason(null);
     });
     return () => {
       unsub();
@@ -260,7 +271,8 @@ export default function App() {
 
   useEffect(() => {
     const unsub = connection.on('room_resumed', () => {
-      useGameStore.setState({ roomPaused: false, roomPauseReason: null });
+      useGameStore.setState({ roomPaused: false, roomPauseReason: null, playerLeft: null });
+      setPlayerLeftDismissed(false);
     });
     return () => {
       unsub();
@@ -269,19 +281,64 @@ export default function App() {
 
   useEffect(() => {
     const unsub = connection.on('state_update', (msg) => {
-      const state = msg?.state;
+      const current = useGameStore.getState();
+      if (!shouldAcceptMultiplayerState(current, connection.roomCode)) return;
+      if (!connection.shouldApplyStateUpdate(msg)) return;
+      const state = buildMultiplayerStatePatch(current, msg);
       if (!state) return;
       state.isMultiplayer = true;
       state.isHost = connection.playerIndex === 0;
       state.myPlayerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
-      const pending = useGameStore.getState().multiplayerStartPending;
+      const pending = current.multiplayerStartPending;
       useGameStore.setState({
         ...state,
         multiplayerStartPending: pending,
+        waitingForRemoteAction: current.waitingForRemoteAction,
+        pendingRemoteActionLabel: current.pendingRemoteActionLabel,
+        lastRemoteActionLatencyMs: current.lastRemoteActionLatencyMs,
       });
     });
     return () => {
       unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    const unsubPending = connection.on('action_pending', (msg) => {
+      useGameStore.setState({
+        waitingForRemoteAction: true,
+        pendingRemoteActionLabel: msg.actionType || 'move',
+      });
+    });
+    const unsubAcknowledged = connection.on('action_acknowledged', (msg) => {
+      const latencyMs = Math.max(0, Math.round(Number(msg.latencyMs) || 0));
+      const network = (navigator as any).connection;
+      useGameStore.setState({
+        waitingForRemoteAction: false,
+        pendingRemoteActionLabel: null,
+        lastRemoteActionLatencyMs: latencyMs,
+      });
+      track('multiplayer_action_latency', {
+        action_type: msg.actionType,
+        latency_ms: latencyMs,
+        effective_type: network?.effectiveType,
+        network_rtt_ms: network?.rtt,
+        downlink_mbps: network?.downlink,
+      });
+    });
+    const unsubCleared = connection.on('action_cleared', (msg) => {
+      useGameStore.setState({
+        waitingForRemoteAction: false,
+        pendingRemoteActionLabel: null,
+      });
+      if (msg.reason === 'timeout') {
+        track('multiplayer_action_timeout', { action_type: msg.actionType });
+      }
+    });
+    return () => {
+      unsubPending();
+      unsubAcknowledged();
+      unsubCleared();
     };
   }, []);
 
@@ -307,21 +364,6 @@ export default function App() {
     };
   }, []);
 
-  // Countdown for player left popup
-  useEffect(() => {
-    if (!playerLeft || playerLeftDismissed) return;
-    if (playerLeftCountdown <= 0) {
-      setPlayerLeftDismissed(true);
-      useGameStore.getState().reset();
-      useGameStore.setState({ playerLeft: null, hostDisconnected: false });
-      connection.disconnect();
-      navigate('/');
-      return;
-    }
-    const t = setTimeout(() => setPlayerLeftCountdown(c => c - 1), 1000);
-    return () => clearTimeout(t);
-  }, [playerLeft, playerLeftCountdown, playerLeftDismissed]);
-
   // Auto-dismiss host disconnected popup after 5s
   useEffect(() => {
     if (hostDisconnected) {
@@ -343,11 +385,13 @@ export default function App() {
     useGameStore.getState().reset();
     useGameStore.setState({ hostDisconnected: false, roomPaused: false, roomPauseReason: null });
     connection.disconnect();
+    setRoomClosedReason(null);
     navigate('/');
   };
 
   const dismissPlayerLeft = () => {
     setPlayerLeftDismissed(true);
+    connection.send({ type: 'quit_room' });
     useGameStore.getState().reset();
     useGameStore.setState({ playerLeft: null, hostDisconnected: false, roomPaused: false, roomPauseReason: null });
     connection.disconnect();
@@ -359,23 +403,37 @@ export default function App() {
       {hostDisconnected && !hostDismissed && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={dismissHostClosed}>
           <div className="bg-green-800 rounded-xl p-6 text-center max-w-sm mx-4 border border-green-600/50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-xl font-bold text-yellow-300 mb-2">Host Disconnected</h2>
-            <p className="text-green-200 text-sm">The host has disconnected from the room.</p>
+            <h2 className="text-xl font-bold text-yellow-300 mb-2">
+              {roomClosedReason === 'player_quit' || roomClosedReason === 'host_quit' ? 'Room Closed' : 'Host Disconnected'}
+            </h2>
+            <p className="text-green-200 text-sm">
+              {roomClosedReason === 'player_quit'
+                ? 'A player quit, so the multiplayer room has been closed.'
+                : roomClosedReason === 'host_quit'
+                  ? 'The host closed the multiplayer room.'
+                  : 'The host has disconnected from the room.'}
+            </p>
             <p className="text-green-400/60 text-sm mt-4">Returning to the main menu in 5s...</p>
           </div>
         </div>
       )}
       {playerLeft && !playerLeftDismissed && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={dismissPlayerLeft}>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-green-800 rounded-xl p-6 text-center max-w-sm mx-4 border border-green-600/50 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-xl font-bold text-yellow-300 mb-2">Room Paused</h2>
             <p className="text-green-200 text-sm">{playerLeft.playerName} has left the game.</p>
-            <p className="text-green-400/60 text-xs mt-2">The room is paused until the host quits or the room closes.</p>
-            <p className="text-green-400/60 text-xs mt-4">Auto-closes in {playerLeftCountdown}s...</p>
+            <p className="text-green-400/60 text-xs mt-2">Waiting for that player to reconnect. The VM will close the room if the reconnect timeout expires.</p>
+            <button
+              type="button"
+              onClick={dismissPlayerLeft}
+              className="mt-4 w-full rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white hover:bg-red-600"
+            >
+              Quit Room
+            </button>
           </div>
         </div>
       )}
-      {((phase === 'playing' || phase === 'finished') && !multiplayerStartPending) ? <Game /> : <Router hash={route} />}
+      {(phase === 'playing' || phase === 'finished') ? <Game /> : <Router hash={route} />}
       {multiplayerStartPending && diceResults && (
         <MultiplayerDiceOverlay
           dice={diceResults.dice}

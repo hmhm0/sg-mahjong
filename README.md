@@ -17,15 +17,18 @@ Copyright &copy; 2026 sgmahjong.app. All rights reserved.
 - **Smart AI** — scoring-based discard selection, claim priority with delays
 - **Configurable** — tai threshold, Fei count, unlimited tai mode
 - **Special-hand cap toggle** — optional `Caps Max Tai for Special` switch with a slider up to 18 tai for special wins
+- **Chip match lifecycle** — after settlement leaves any player at `$0` or below, the match ends with final chip standings instead of starting another round
+- **Server-owned rematches** — Play Again waits for all four seats, counts down for 5 seconds, then creates a new multiplayer room code with the original settings, roster, and reset Starting Chips
 - **Responsive tile display** — player tiles face-up, opponent tiles face-down with rotation
 - **Rules reference** — in-game rules page covering all scoring patterns
-- **Special hands** — Tian Hu, Di Hu, Men Hu, Thirteen Wonders, Qiang Kang, Da San Yuan, Da Xi Si, Shi Ba Luo Han
+- **Special hands** — Tian Hu, Di Hu, Men Hu, Thirteen Wonders, Qiang Kang, Da San Yuan, Da Xi Si, Kan Kan Hu (坎坎胡), Shi Ba Luo Han
 - **Self-Kong** & **Kang Shang** — upgrade pungs, concealed kongs, auto-win on kong replacement
 - **Real wall flow** — normal draws continue until the whole wall is down to 15 tiles, while flower/animal and kong replacements draw from the back of that same wall; there is no separately reserved hidden dead wall
 - **Round wind rotation** — East → South → West → North, game ends after North
 - **AFK warning** — detects player inactivity (>5 min), displays warning to all
 - **Move history** — scrollable popup tracking every action per round
-- **Developer logs** — in-game trace of hands, bonus tiles, discards, and win-evaluation snapshots for debugging
+- **Mobile action feedback** — multiplayer controls immediately show a pending state, reject accidental double taps, and report slow canonical confirmations
+- **Revision-safe synchronization** — one app-shell listener applies each VM state revision once, including reconnect-aware revision resets
 - **SEO-ready pages** — route-specific titles, descriptions, canonical tags, structured data, robots.txt, sitemap.xml, and social preview metadata
 - **Prerendered public pages** — the build writes static HTML snapshots for `/rules/` and `/tutorial/`, while temporary room pages stay `noindex`
 - **Clean host/join flow** — in-app navigation opens Host/Join without a full reload, and multiplayer reconnects can resume the same room after a transient disconnect
@@ -47,7 +50,7 @@ Copyright &copy; 2026 sgmahjong.app. All rights reserved.
 | Layer | Choice |
 |---|---|
 | Framework | React 18 + TypeScript |
-| Build | Vite 5 |
+| Build | Vite 8 |
 | State | Zustand 4 |
 | Server | Node.js + ws (WebSocket relay for multiplayer) |
 | Styling | Tailwind CSS 3 |
@@ -76,6 +79,18 @@ npm run build
 # Run the scoring smoke tests
 npm run test:rules
 # → Verifies scoring, payouts, wall flow, dealer rotation, kongs, and special-win transitions
+
+# Run multiplayer server fixtures
+npm run test:server
+# → Verifies isolated room stores, reconnect tokens, limits, and room persistence
+
+# Run the local 25-room / 100-client load test
+npm run test:load
+# → Starts a temporary server, drives legal turns, and reports traffic, CPU, memory, event-loop delay, and disconnects
+
+# Verify room recovery across a WebSocket process restart
+npm run test:restart
+# → Restarts a temporary server and securely rejoins the persisted canonical room
 ```
 
 ### Environment Variables
@@ -89,6 +104,13 @@ VITE_GOOGLE_SITE_VERIFICATION=your_google_verification_token
 ```
 
 If these are left blank, the app still runs normally and analytics stays disabled.
+
+### Dependency Security
+
+- Production and development dependencies are checked with `npm audit` before release commits.
+- The current dependency tree reports zero known vulnerabilities.
+- Vite 8 and the matching React plugin replace the older Vite/esbuild toolchain that carried a development-server advisory.
+- Secrets, `.env` files, SSH private keys, and persisted room snapshots must never be committed. The repository ignores `.env*` and `server/.data/`, while deployment reads the SSH key from the local filesystem.
 
 ### macOS
 
@@ -148,6 +170,81 @@ REMOTE_HOST=1.2.3.4 REMOTE_USER=ubuntu SSH_KEY=~/.ssh/your_key npm run deploy:vm
 
 If you change only documentation, you do not need to deploy.
 
+### Current Production Status
+
+The 2026-07-16 production deployment is running on the Oracle VM:
+
+- Frontend: `http://140.245.104.25` returns HTTP 200.
+- Multiplayer: external `ws://140.245.104.25:3002` room creation and room closure passed.
+- Services: `sg-mahjong-ws` and Nginx are active.
+- Health: `http://127.0.0.1:3002/health` reports `status: ok` on the VM.
+- Persistence: secure room tokens are issued and `server/.data/rooms.json` writes version-1 snapshots without retaining closed rooms.
+- Bundle verification: the deployed frontend no longer contains the Dev Logs interface.
+
+The `sgmahjong.app` hostname currently does not resolve through DNS, and this VM currently listens on HTTP port 80 rather than HTTPS port 443. Until DNS and TLS are configured, production is reachable through the VM IP and uses `ws://` rather than `wss://`.
+
+### Multiplayer Capacity And Operations
+
+The multiplayer relay remains VM-authoritative and runs as one Node.js process, but active rooms are no longer tied only to process memory:
+
+- The TypeScript game engine is loaded once. Each room receives an isolated lightweight Zustand store instead of transpiling a private module graph.
+- Canonical room snapshots and per-seat reconnect tokens are written atomically to `server/.data/rooms.json`.
+- `server/.data/` is excluded from Git and deployment rsync deletion, so a normal `sg-mahjong-ws` restart can restore active rooms.
+- Restored rooms start paused. Every real-player seat must securely rejoin before play resumes.
+- Rejoining requires the room code, seat index, and a cryptographically random token stored in that browser tab's `sessionStorage`.
+- A restored room closes if its real players do not reconnect within the restart-recovery timeout.
+- Routine state synchronization is coalesced and sends move-history deltas. Full canonical state remains available for initial joins, reconnects, restart recovery, and round starts.
+- The app shell is the only canonical `state_update` owner. Server revision numbers reject duplicate or stale snapshots while reconnects explicitly reset the revision gate before accepting a recovery snapshot.
+- Human gameplay actions carry a client action ID. The VM echoes that ID with the next canonical state, allowing the browser to keep controls single-flight and measure tap-to-canonical-confirmation latency.
+- Unchanged player, wall, meld, and tile-array references are preserved when applying canonical state. Memoized hand and tile render boundaries reduce unnecessary SVG reconciliation on mobile browsers.
+- Browser WebSockets are checked with server `ping`/`pong` heartbeats. Dead and excessively backlogged clients are terminated so stale sockets do not consume a room indefinitely.
+
+Operational endpoints are served on the WebSocket port:
+
+```bash
+curl http://127.0.0.1:3002/health
+curl http://127.0.0.1:3002/metrics
+```
+
+`/health` reports active/started/paused rooms, connections, process CPU, RSS/heap memory, event-loop p99 delay, traffic counters, rejected messages, rate limits, and backpressure disconnects. `/metrics` exposes the same core values in Prometheus text format.
+
+Default safety limits:
+
+| Setting | Default |
+|---|---:|
+| Total WebSocket connections | 250 |
+| Connections per source IP | 32 |
+| Active rooms | 50 |
+| Incoming WebSocket payload | 64 KiB |
+| Buffered outbound data per client | 1 MiB |
+| Messages per connection | 120 per 10 seconds |
+| Room creations per source IP | 10 per minute |
+| Heartbeat interval | 30 seconds |
+| Host reconnect timeout | 2 minutes |
+| Joined-player reconnect timeout | 2 minutes |
+| Restart recovery timeout | 10 minutes |
+
+These values can be changed through `MAX_CONNECTIONS`, `MAX_CONNECTIONS_PER_IP`, `MAX_ROOMS`, `MAX_PAYLOAD_BYTES`, `MAX_BUFFERED_BYTES`, `MESSAGE_LIMIT`, `MESSAGE_WINDOW_MS`, `ROOM_CREATE_LIMIT`, `ROOM_CREATE_WINDOW_MS`, `HEARTBEAT_INTERVAL_MS`, `HOST_DISCONNECT_TIMEOUT_MS`, `PLAYER_DISCONNECT_TIMEOUT_MS`, `RESTART_RECOVERY_TIMEOUT_MS`, and `ROOM_STATE_FILE`.
+
+`TRUST_PROXY` defaults to off. Keep it off while clients connect directly to port `3002`; otherwise a client could spoof `X-Forwarded-For` and evade per-IP limits. Enable it only after Node is bound privately behind the trusted Nginx reverse proxy.
+
+The current measured local baseline is:
+
+- 25 active rooms
+- 100 connected players
+- 300 relayed gameplay actions over 15 seconds
+- 1,200 delivered action acknowledgements across the four clients in each room, covering all 300 acting-client actions
+- 0 message errors
+- 0 unexpected disconnects
+- Approximately 12.8 MB sent with action acknowledgements enabled
+- Approximately 225 MB process RSS
+- Approximately 14.9% process CPU
+- Approximately 77 ms event-loop p99 delay
+
+This establishes **100 concurrent players / 25 rooms as the tested local target**, not a guarantee for every VM or mobile network. Check the VM health metrics during real usage before raising the documented target.
+
+The server is intentionally still single-VM. Do not place multiple independent WebSocket instances behind a load balancer: room state and reconnect credentials are local to one VM. Multi-VM operation requires a shared room-state/coordination layer such as Redis plus sticky routing or explicit room ownership.
+
 ### Multiplayer Verification
 
 Multiplayer gameplay is verified manually with separate host and join browser sessions because the VM owns the canonical room state. The main regression checklist is:
@@ -155,9 +252,25 @@ Multiplayer gameplay is verified manually with separate host and join browser se
 1. Create and join a room, then confirm both clients receive the same player names, seat winds, dealer badge, chips, and room state.
 2. Verify ready/countdown and result-to-next-round behavior, including a dealer win and a non-dealer win.
 3. Verify Win, Kong, Pung, Chi, and Pass controls only appear for the eligible local player.
-4. Compare move history and developer logs after relayed actions.
+4. Compare move history after relayed actions.
 5. Test host app-switch/reconnect, join reconnect, explicit quit, paused-room handling, and room closure.
-6. Check the table, result screen, payout breakdown, history, and developer logs on mobile browsers.
+6. Check the table, result screen, payout breakdown, and history on mobile browsers.
+7. On mobile data, confirm each action immediately shows `Sending ...`, controls cannot be double-tapped while pending, and slow confirmations display their measured milliseconds.
+8. Reduce one player to `$0` or below, confirm final chip standings, verify bot/real-player ready status, and confirm the 5-second rematch creates a different room code with the original settings and reset chips.
+9. Press Quit from a non-host seat and confirm the room closes for every connected client while transient socket disconnects still use the reconnect path.
+
+### Mobile Multiplayer Latency
+
+Multiplayer remains VM-authoritative: the browser does not commit a discard or claim until the VM validates it and returns canonical state. To keep that safe model responsive on phones:
+
+- Only one gameplay action may be pending per browser seat.
+- The selected action displays immediately as `Sending ...`.
+- The VM returns the client action ID with the canonical state that processed it.
+- Confirmations taking at least 250 ms display their measured round-trip time for diagnosis.
+- PostHog records `multiplayer_action_latency` when analytics is configured, including the browser-reported connection type, estimated network RTT, and downlink where available.
+- Duplicate or stale state revisions are ignored, while reconnects reset the revision gate before rehydration.
+
+The current raw-IP deployment still uses plaintext `ws://` on port `3002`. The preferred production network layout for mobile reliability is HTTPS and WSS through Nginx on standard port `443`, with the Node relay kept private on `127.0.0.1:3002`. That cutover belongs to the domain/DNS/TLS phase and should happen only after the hostname points to the VM.
 
 ---
 
@@ -177,7 +290,7 @@ Multiplayer gameplay is verified manually with separate host and join browser se
 | Discard button | Discard the selected tile |
 | Win / Kong / Pung / Chi | Claim the last discarded tile |
 | Pass | Pass on claiming |
-| Quit Game | Return to home screen |
+| Quit Game | Close the multiplayer room for everyone, or return to the menu in singleplayer |
 | History | Open move history popup |
 
 ---
@@ -198,6 +311,7 @@ Multiplayer gameplay is verified manually with separate host and join browser se
 | Thirteen Wonders (十三幺) | 13 |
 | Qi Qiang Yi (七搶一) | 10 |
 | Hua Hu (花胡) | 12 |
+| Kan Kan Hu (坎坎胡) — 8 tai special + required Zi Mo | 9 |
 | Shi Ba Luo Han (十八罗汉) | 18 |
 | Half Flush (混一色) | 2 |
 | Pong Pong Hu (碰碰胡) | 2 |
@@ -215,6 +329,7 @@ See the full rules reference in-game at `/rules`.
 - Standard, Fei-assisted, and visible-only scoring.
 - Discard and Zi Mo tai thresholds.
 - Payout tables, shooter mode, chip settlement, and tai caps.
+- Match-over detection at `$0` or below, final standings, all-seat rematch readiness, and fresh-match chip/config reset.
 - Front-wall draws, back-wall replacements, the 15-tile cutoff, and kong exhaustion.
 - Dealer-cycle counts and seat-wind rotation.
 - Tian Hu, Di Hu, Men Hu, Hua Shang, Kang Shang, Qi Qiang Yi, Hua Hu, Qiang Kang Thirteen Wonders, and the locked limit-hand totals.

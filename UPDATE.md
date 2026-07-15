@@ -5,6 +5,259 @@ Update this file whenever a meaningful change is made to the codebase.
 
 ---
 
+## [2026-07-16] — Phase: Dependency Security Audit and Vite 8 Upgrade
+
+### Changed
+
+- **Secure build toolchain**: Upgraded Vite from 5.x to `8.1.4` and `@vitejs/plugin-react` to `6.0.3`, removing the esbuild development-server advisory reported by the previous lockfile.
+- **VM compatibility**: Confirmed the Oracle VM runs Node `20.20.2`, which satisfies Vite 8's supported Node range.
+- **Security documentation**: Added the release rule that `.env` files, SSH private keys, reconnect credentials, and persisted `server/.data/` room snapshots must remain outside Git.
+
+### Security Audit
+
+- `npm audit --omit=dev` reports 0 vulnerabilities.
+- Full `npm audit` reports 0 vulnerabilities after the toolchain upgrade.
+- Repository secret scans found no private-key blocks, access tokens, API keys, reconnect-token values, `.env` files, or persisted room snapshots in the publish set.
+- The documented PostHog/Search Console values are placeholders, and the SSH key references are local filesystem paths only; no key material is present.
+- Git remote access was verified against `origin/main` before staging.
+- **Proxy-header hardening**: Direct WebSocket clients can no longer spoof `X-Forwarded-For` to bypass per-IP connection and room-creation limits. Proxy headers are trusted only when `TRUST_PROXY` is explicitly enabled behind the future private Nginx proxy.
+- **Cryptographic room codes**: Room and rematch codes now use `crypto.randomInt` instead of `Math.random`.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run test:server`
+- `npm run test:load`
+- `npm run test:restart`
+- `npm run build`
+- `npm audit`
+- `git diff --check`
+- Vite 8 production build and prerender completed successfully.
+- 25 rooms / 100 clients / 300 actions completed with 0 errors, 0 unexpected disconnects, and complete action acknowledgement coverage.
+
+## [2026-07-16] — Phase: Mobile Multiplayer Latency and Render Hardening
+
+### Fixed
+
+- **Duplicate canonical application**: Removed page-level `state_update` writes from Game, Host Game, and Join Game. The persistent App shell is now the single owner that applies VM canonical snapshots.
+- **Revision deduplication**: Added a per-room revision gate that rejects duplicate and stale snapshots. Reconnects and recreated room codes reset the gate so legitimate recovery snapshots still apply.
+- **Multiplayer self-kong divergence**: Stopped the browser from locally clearing the self-kong prompt after sending a multiplayer kong. The VM canonical response now remains the only multiplayer state mutation.
+- **Mobile double-action risk**: Multiplayer actions are single-flight per browser seat, so repeated taps cannot send another discard, claim, pass, win, or kong while the first action is awaiting canonical confirmation.
+
+### Added
+
+- **Canonical action acknowledgements**: Browser actions now carry a bounded client action ID. The VM echoes successful action IDs with the next canonical `state_update`, while rejected actions echo the ID in the error response.
+- **Immediate pending feedback**: Mobile and desktop controls show `Sending ...` as soon as an action is sent and use a waiting/disabled state until the VM confirms, rejects, disconnects, or reaches the eight-second timeout.
+- **Action latency telemetry**: Canonical acknowledgements measure tap-to-state-confirmation latency. Confirmations at or above 250 ms are shown in the game room, and configured PostHog projects receive action type, measured latency, browser-reported connection type, estimated RTT, and downlink.
+- **Canonical structural sharing**: Unchanged players, walls, dead-wall arrays, discard history, winning tiles, and configuration retain their existing references instead of being replaced after every JSON snapshot.
+- **Mobile render boundaries**: Converted full-store table subscription to a shallow selector, memoized tile/meld rendering, and split face-down and interactive hand rows into memoized components.
+- **Regression fixtures**: Added duplicate/older revision rejection, reconnect reset, new-room revision reset, and unchanged canonical-reference coverage.
+- **Load acknowledgement coverage**: The 25-room / 100-client harness now assigns action IDs and fails if canonical acknowledgements do not cover every sent action.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run test:server`
+- `npm run test:load`
+- `npm run test:restart`
+- `npm run build`
+- `node --check server/index.cjs`
+- `node --check scripts/load-test-ws.cjs`
+- `git diff --check`
+- 25 rooms / 100 clients / 300 actions completed with 0 errors and 0 unexpected disconnects.
+- The action-acknowledgement load fixture observed 1,200 delivered acknowledgement entries across the four clients per room, covering all 300 acting-client actions.
+
+### Next Infrastructure Phase
+
+- Keep the Node WebSocket relay private on `127.0.0.1:3002`.
+- Point the production domain DNS to the Oracle VM.
+- Remove the duplicate Nginx default-server declaration.
+- Configure TLS and serve the website through HTTPS on port 443.
+- Proxy a same-origin WebSocket path through Nginx and switch browsers to `wss://` on standard port 443.
+- Re-run mobile-data latency, reconnect, health, and external WebSocket tests after the secure cutover.
+
+## [2026-07-16] — Phase: Developer Log Removal
+
+### Removed
+
+- **Developer-log UI**: Removed the in-game `Dev Logs` button, overlay, clear action, raw JSON viewer, and mobile developer-log panel.
+- **Snapshot generation**: Disabled developer-log creation in the game store so gameplay no longer builds or retains full per-player hand snapshots after draws, discards, claims, and win evaluations.
+- **Multiplayer debug transport**: Removed developer-log delta fields and counters from routine canonical synchronization. Move History remains synchronized independently.
+- **Persisted debug data**: Room serialization and restart restoration now force `debugLogs` to an empty array, preventing old developer snapshots from remaining in new room persistence files.
+
+### Changed
+
+- **Manual verification scope**: Multiplayer parity and mobile checks now cover Move History only; developer-log parity is no longer an active requirement.
+- **100-player capacity result**: The 25-room / 100-client test dropped from approximately 23.4 MB to 12.6 MB outbound traffic after developer snapshots were removed, with 0 errors and 0 unexpected disconnects.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run test:server`
+- `npm run test:load`
+- `npm run test:restart`
+- `npm run build`
+- `npm run deploy:vm`
+- `node --check server/index.cjs`
+- `git diff --check`
+- Oracle VM frontend returned HTTP 200 through `140.245.104.25`.
+- External WebSocket smoke test created and closed a production room and received a 43-character reconnect token.
+- `sg-mahjong-ws` and Nginx verified active after deployment.
+- `/health` returned `status: ok`; VM WebSocket process memory was approximately 60 MB while idle.
+- `server/.data/rooms.json` wrote a version-1 persistence snapshot and retained zero rooms after the smoke room closed.
+- Deployed frontend verification confirmed the Dev Logs interface is absent.
+
+### Infrastructure Note
+
+- `sgmahjong.app` currently has no resolvable DNS record from either the development machine or the VM.
+- Nginx currently listens on port 80 but not port 443, so the deployed site is presently verified through `http://140.245.104.25` and `ws://140.245.104.25:3002`.
+- Nginx still emits the existing non-fatal duplicate default-server warning for `server name "_"`.
+
+## [2026-07-15] — Phase: 100-Player Multiplayer Production Hardening
+
+### Changed
+
+- **Shared room-engine factory**: The browser keeps the existing React Zustand hook while the VM loads the TypeScript engine once and creates isolated lightweight vanilla stores per room, removing the previous per-room TypeScript runtime/transpilation cost.
+- **Coalesced canonical sync**: Server store changes are combined into one update per action window instead of broadcasting every internal Zustand `set`.
+- **Move-history deltas**: Routine multiplayer updates append only new move-history entries; full canonical state is still sent for starts and reconnects. Delta application remains idempotent under repeated delivery.
+- **Server-owned action authorization**: The VM validates that the socket owns the acting seat and that discard, claim, pass, Zi Mo, and kong actions are currently available for that seat.
+- **Configuration validation**: Multiplayer game settings, room codes, player names, action indexes, and Chi payloads are normalized and bounded before reaching the canonical engine.
+
+### Added
+
+- **Secure seat reconnects**: Every seat receives a cryptographically random reconnect token. Room code plus player index is no longer enough to replace an active or disconnected seat.
+- **Restart room recovery**: Canonical rooms, settings, readiness, chip state, roster, and reconnect credentials are atomically persisted to `server/.data/rooms.json`; restored rooms remain paused until every real-player seat securely rejoins.
+- **Persistence-safe deployment**: Git and VM rsync exclude `server/.data/`, so normal code deployments do not delete persisted room snapshots.
+- **WebSocket heartbeat**: Server `ping`/`pong` checks terminate stale half-open sockets.
+- **Traffic safety limits**: Added total/per-IP connection ceilings, room-count and room-creation limits, per-connection message limits, a 64 KiB payload cap, and server-side validation for unsupported/binary messages.
+- **Backpressure handling**: Slow clients exceeding the outbound buffer ceiling are closed instead of allowing unbounded queued state to consume VM memory.
+- **Room cleanup matrix**: Host and joined-player reconnect timeouts now close abandoned started rooms; abandoned lobby seats are released and receive rotated reconnect credentials.
+- **Reconnect wait parity**: Removed the browser's old 5-second forced exit from paused rooms. Clients now wait for the VM reconnect timeout or can explicitly close the room with Quit Room.
+- **Health and metrics endpoints**: Added `/health` JSON and `/metrics` Prometheus output for rooms, connections, CPU, RSS/heap, event-loop p99 delay, traffic, rejections, rate limits, and backpressure.
+- **Server fixtures**: Added deterministic coverage for isolated room stores, secure tokens, room-code validation, connection/message limits, and atomic persistence.
+- **100-client load harness**: Added a spawned local test that creates 25 four-player rooms, starts every game, drives legal turns, and fails on errors or unexpected disconnects.
+- **Restart recovery harness**: Added an end-to-end process restart fixture proving a playing room is restored and can only be rejoined with its seat token.
+
+### Capacity Baseline
+
+- 25 active rooms / 100 WebSocket clients.
+- 300 gameplay actions over 15 seconds.
+- 0 errors and 0 unexpected disconnects.
+- Approximately 23.4 MB outbound traffic, reduced from approximately 471 MB before state coalescing/deltas.
+- Approximately 231 MB RSS, 14.9% process CPU, and 88 ms event-loop p99 delay on the local development machine.
+- Default production ceilings are 250 connections and 50 active rooms. The documented supported target remains the measured 100 players / 25 rooms until VM telemetry proves a higher limit.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run test:server`
+- `npm run test:load`
+- `npm run test:restart`
+- `npx tsc -p tsconfig.app.json --pretty false`
+- `node --check server/index.cjs`
+- `git diff --check`
+
+## [2026-07-15] — Phase: Host Quit to Singleplayer Isolation
+
+### Fixed
+
+- **Stale room-state race**: Removed the 150 ms delayed disconnect after in-game Quit and Host Game cancellation, preventing the old room from sending a final canonical snapshot after the user has returned to the menu.
+- **Singleplayer isolation**: Active and finished singleplayer sessions now reject multiplayer `state_update` messages even if an obsolete room socket somehow emits a delayed event.
+- **Retired socket guard**: WebSocket callbacks now verify that they belong to the currently active socket before dispatching messages or reconnecting.
+- **Persistent global listeners**: Disconnecting no longer clears every registered connection handler, so App-level room lifecycle listeners remain available when the user hosts or joins another room later in the same browser session.
+- **Connecting-socket cleanup**: Disconnect now closes or retires sockets that are still connecting instead of allowing an abandoned socket to open later.
+
+### Added
+
+- **Regression coverage**: Added fixtures proving delayed room state is rejected by active singleplayer games while valid multiplayer and stored-room reconnect snapshots remain accepted.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run build`
+- Local two-client WebSocket timing test confirmed that `quit_room` still reaches the VM when the host closes the socket immediately afterward.
+
+## [2026-07-15] — Phase: Chip Match End and New-Room Rematch
+
+### Added
+
+- **Chip match boundary**: A settled win now ends the match when any player reaches `$0` or a negative chip balance; the old room cannot advance into another hand after that result.
+- **Final chip standings**: Added a mobile-friendly Match Over screen that ranks all four players by final chips and identifies the top player or joint leaders.
+- **All-seat Play Again status**: Added per-seat readiness with a visible `X/4 ready` status. Bot seats are ready automatically, while every real player must press Play Again.
+- **VM-owned rematch countdown**: Multiplayer rematches now use a server-authoritative 5-second countdown instead of the browser-owned ordinary round countdown.
+- **New-room rematch**: After unanimous readiness, the VM creates a new four-character room code, keeps the same roster and exact original configuration, resets Starting Chips, rolls fresh seats, and restarts from East round `1/4`.
+- **Explicit room-wide Quit**: The in-game Quit button now sends a dedicated room-close command from any seat. Transient disconnects remain separate so mobile app switching and reconnect recovery still work.
+- **Lifecycle helpers and fixtures**: Added shared match-over/standings helpers plus VM fixtures for `$0`/negative detection, ranking, bot readiness, all-seat readiness, exact config preservation, roster preservation, and chip reset.
+
+### Changed
+
+- **Negative chip formatting**: Final balances now render as `-$100` instead of `$-100`.
+- **Singleplayer rematch**: Play Again treats the three bots as ready, waits 5 seconds, then starts a fresh match with the same settings and reset chips.
+
+### Verified
+
+- `npm run test:rules`
+- `node --check server/index.cjs`
+- `node --check server/matchLifecycle.cjs`
+- `npm run build`
+- Local two-client WebSocket smoke test confirmed that Quit broadcasts `room_closed` and closes the room for both host and joiner.
+
+## [2026-07-15] — Phase: Chip Settlement and Result Parity Audit
+
+### Fixed
+
+- **$0.30 / $0.60 Shooter rows**: Corrected the 1-10 tai Shooter payouts to `$4`, `$7`, `$11`, `$20`, `$40`, `$79`, `$155`, `$308`, `$616`, and `$1,231`.
+- **Shooter source of truth**: Settlement now follows the visible `Shooter` On/Off setting even if a legacy `chipSettlementMode` value in a restored snapshot disagrees.
+- **Result parity**: Result-screen payout wording and transfer rows now come from shared chip-settlement helpers instead of separately rebuilding settlement rules in the UI.
+
+### Added
+
+- **Settlement invariants**: Added regression checks that every settlement is zero-sum, winner gains equal all payer losses, and every final chip balance exactly matches its displayed delta.
+- **Flow-specific payout fixtures**: Added exact result-and-balance parity coverage for non-shooter discard, Shooter discard, Zi Mo, capped payouts, Hua Shang, uncapped 9-tai Kan Kan Hu, and special-capped Kan Kan Hu.
+- **Full payout-table fixture**: Added coverage for all 18 tai rows across `$0.10 / $0.20`, `$0.30 / $0.60`, and `$1 / $2`, checking non-discarder, discarder/Zi Mo, and Shooter amounts.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run build`
+
+## [2026-07-15] — Phase: Kan Kan Hu Special Classification
+
+### Changed
+
+- **Terminology correction**: The hand is labeled `Kan Kan Hu (坎坎胡)`.
+- **Exact hand definition**: Kan Kan Hu requires Zi Mo with four unexposed natural pungs and concealed eyes; discard wins, exposed melds, sequence hands, and Fei-substituted pungs are rejected.
+- **Special score plus Zi Mo**: Kan Kan Hu is an 8-tai special hand and its required Zi Mo adds +1 tai, producing 9 tai total; Concealed Hand, wind-pung, dragon-pung, and other ordinary tai still do not stack.
+- **Special cap behavior**: Kan Kan Hu bypasses normal `Max Cap Tai` and is affected only by `Caps Max Tai for Special`.
+- **Automatic special win**: Kan Kan Hu now follows the same automatic special-win eligibility path as the other locked special hands.
+- **Visible-only privacy**: Opponent visible-only scoring does not reveal a concealed Kan Kan Hu before the hand ends.
+- **Result payout label**: The result screen recognizes Kan Kan Hu as a special hand when showing whether special payouts are capped or uncapped.
+
+### Added
+
+- **Regression coverage**: Added fixtures for the 8-tai special plus required Zi Mo, 9-tai total, no other ordinary tai stacking, automatic-win behavior, visible-only privacy, normal-cap bypass, special-cap payout, Zi Mo-only eligibility, exposed-meld rejection, sequence rejection, and Fei-pung rejection.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run build`
+
+## [2026-07-15] — Phase: Hua Shang Result Parity
+
+### Fixed
+
+- **Hua Shang result total**: The result screen now treats Hua Shang as a Zi Mo win, so the visible tai breakdown includes `Self-Draw +1` and matches the tai total used for win eligibility and chip settlement.
+- **Self-draw method classification**: Centralized result-screen self-draw detection for Zi Mo, Hua Shang, Kang Shang, Men Hu, Tian Hu, Hua Hu, and self-drawn Thirteen Wonders while preserving discard attribution when a shooter exists.
+
+### Added
+
+- **Hua Shang parity regression**: Added coverage that the result-screen tai total and settlement `rawTai` are identical and that the Zi Mo line remains visible.
+
+### Verified
+
+- `npm run test:rules`
+- `npm run build`
+
 ## [2026-07-15] — Phase: Tracker Reconciliation and Special-Flow Fixtures
 
 ### Fixed
@@ -35,16 +288,22 @@ Update this file whenever a meaningful change is made to the codebase.
    Verify room state synchronization, ready/countdown, dealer and seat rotation, payout/chip settlement, reconnects, and result-to-next-round behavior with separate host and join browser sessions.
 2. **Claim-button routing verification.**
    Verify simultaneous Win/Kong/Pung/Chi eligibility and ensure only the correct local player sees actionable controls.
-3. **Move history and developer-log parity.**
-   Verify host and join clients receive equivalent canonical history and debug entries after relayed actions.
+3. **Move history parity.**
+   Verify host and join clients receive equivalent canonical history entries after relayed actions.
 4. **Reconnect and room lifecycle matrix.**
    Cover host mobile app-switch, join reconnect, explicit quit, stale socket replacement, paused rooms, and host timeout cleanup.
 5. **Result-screen and mobile regression pass.**
    Keep payout breakdowns, winning-discard text, countdowns, and next-round controls compact and synchronized across phone and desktop layouts.
-6. **Infrastructure cleanup.**
+6. **Mobile-data action latency pass.**
+   Verify the pending-action status, double-tap lock, measured slow-confirmation line, and reconnect reset on iOS and Android cellular browsers before and after the WSS cutover.
+7. **Infrastructure cleanup.**
    Remove the duplicate Nginx default-server declaration that currently emits the non-fatal `conflicting server name "_"` warning.
-7. **Toolchain upgrade planning.**
-   Plan a tested Vite/esbuild upgrade rather than using the breaking `npm audit fix --force`; production dependencies currently have no reported audit vulnerabilities.
+8. **Match-over multiplayer manual pass.**
+   Verify four-real-player readiness, mixed bot readiness, countdown cancellation on disconnect, new room-code propagation, exact settings/chip reset, and room-wide Quit from both host and join clients.
+9. **Production VM capacity observation.**
+   After deployment, watch `/health` or `/metrics` during real multiplayer sessions and compare VM CPU, RSS, event-loop delay, reconnects, and backpressure against the tested 100-player local baseline before increasing the capacity target.
+10. **Production DNS, HTTPS, and WSS.**
+   Point `sgmahjong.app` DNS to the Oracle VM, keep Node private on `127.0.0.1:3002`, configure an HTTPS certificate/listener on port 443, proxy a same-origin secure WebSocket path, and then switch production verification from the raw IP and `ws://` to the hostname and `wss://`.
 
 ## [2026-07-14] — Phase: Limit-Hand Tai Cap Fix
 
@@ -340,7 +599,7 @@ The original scoring roadmap is now implemented: legality and tai calculation ar
 - **Ping Hu** (平胡) — +4 tai, all chi melds, no bonuses, no side wait, no dan diao
 - **Chou Ping Hu** (臭平胡) — +1 tai, all chi, no side wait, no 1/9 win tile, self-draw unless other tai
 - **Pong Pong Hu** (碰碰胡) — +2 tai, all pungs/kongs, win with eyes
-- **Kang Kang Hu** (杠杠胡) — +8 tai, all concealed pungs, self-draw only
+- **Kan Kan Hu (坎坎胡)** — 8 tai special + required Zi Mo, 9 tai total
 - **Xiao San Yuan** (小三元) — +4 tai, 2 dragon pungs + dragon pair + Dragon Eyes bonus
 - **Da San Yuan** (大三元) — +10 tai, 3 dragon pungs (any combination)
 - **Xiao Xi Si** (小四喜) — 40 tai (limit), 3 wind pungs + 4th wind as eyes

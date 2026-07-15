@@ -1,3 +1,5 @@
+import { MultiplayerStateRevisionGate } from './multiplayerState';
+
 type MessageHandler = (msg: any) => void;
 
 class GameConnection {
@@ -6,10 +8,15 @@ class GameConnection {
   private _connected = false;
   private _playerIndex = -1;
   private _roomCode = '';
+  private _reconnectToken = '';
   private _serverUrl = '';
   private _reconnectAttempts = 0;
   private _maxReconnectAttempts = 3;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pendingActionTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pendingAction: { id: string; actionType: string; sentAt: number } | null = null;
+  private _actionSequence = 0;
+  private _revisionGate = new MultiplayerStateRevisionGate();
   private _manualDisconnect = false;
   private _exitHooksInstalled = false;
   private _leaveRoomOnExit = () => {
@@ -24,13 +31,15 @@ class GameConnection {
   get connected() { return this._connected; }
   get playerIndex() { return this._playerIndex; }
   get roomCode() { return this._roomCode; }
-  getStoredRoomInfo(): { code: string; playerIndex: number } | null {
+  get reconnectToken() { return this._reconnectToken; }
+  getStoredRoomInfo(): { code: string; playerIndex: number; reconnectToken: string } | null {
     try {
       const code = sessionStorage.getItem('sgmahjong_room_code') || '';
       const idxRaw = sessionStorage.getItem('sgmahjong_player_index');
+      const reconnectToken = sessionStorage.getItem('sgmahjong_reconnect_token') || '';
       const playerIndex = idxRaw === null ? -1 : Number(idxRaw);
-      if (!code || !Number.isInteger(playerIndex) || playerIndex < 0) return null;
-      return { code, playerIndex };
+      if (!code || !reconnectToken || !Number.isInteger(playerIndex) || playerIndex < 0) return null;
+      return { code, playerIndex, reconnectToken };
     } catch {
       return null;
     }
@@ -45,34 +54,42 @@ class GameConnection {
 
   private _doConnect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this._serverUrl);
+      const socket = new WebSocket(this._serverUrl);
+      this.ws = socket;
       this.installExitHooks();
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
+        if (this.ws !== socket) return;
         this._connected = true;
         this._reconnectAttempts = 0;
         this.dispatch({ type: 'connected' });
         if (this._roomCode && this._playerIndex >= 0) {
+          this._revisionGate.reset(this._roomCode);
           this.send({
             type: 'rejoin_room',
             code: this._roomCode,
             playerIndex: this._playerIndex,
+            reconnectToken: this._reconnectToken,
           });
         }
         resolve();
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (this.ws !== socket || this._manualDisconnect) return;
         try {
           const msg = JSON.parse(event.data);
+          this.processActionAcknowledgements(msg);
           this.dispatch(msg);
         } catch (e) {
           console.error('Invalid message:', e);
         }
       };
 
-      this.ws.onclose = () => {
+      socket.onclose = () => {
+        if (this.ws !== socket) return;
         this._connected = false;
+        this.clearPendingAction('disconnected');
         this.dispatch({ type: 'disconnected' });
         if (this._manualDisconnect) return;
         // Auto-reconnect with backoff
@@ -89,7 +106,8 @@ class GameConnection {
         }
       };
 
-      this.ws.onerror = (err) => {
+      socket.onerror = (err) => {
+        if (this.ws !== socket) return;
         if (this._reconnectAttempts === 0) reject(err);
       };
     });
@@ -118,6 +136,31 @@ class GameConnection {
     }
   }
 
+  sendGameAction(actionType: string, data?: Record<string, unknown>): boolean {
+    if (!this.ws || !this._connected || this.ws.readyState !== WebSocket.OPEN || this._pendingAction) {
+      return false;
+    }
+    const clientActionId = `${Date.now().toString(36)}-${(++this._actionSequence).toString(36)}`;
+    const sentAt = performance.now();
+    this._pendingAction = { id: clientActionId, actionType, sentAt };
+    this.dispatch({ type: 'action_pending', actionType, clientActionId });
+    this.ws.send(JSON.stringify({
+      type: 'action',
+      actionType,
+      clientActionId,
+      data: data || {},
+    }));
+    this._pendingActionTimer = setTimeout(() => {
+      if (this._pendingAction?.id !== clientActionId) return;
+      this.clearPendingAction('timeout');
+    }, 8000);
+    return true;
+  }
+
+  shouldApplyStateUpdate(message: any): boolean {
+    return this._revisionGate.shouldApply(this._roomCode, message?.revision);
+  }
+
   on(type: string, handler: MessageHandler) {
     if (!this.handlers.has(type)) {
       this.handlers.set(type, new Set());
@@ -138,12 +181,60 @@ class GameConnection {
     }
   }
 
-  setRoomInfo(code: string, index: number) {
+  private processActionAcknowledgements(message: any) {
+    if (message?.type === 'error' && message.clientActionId && this._pendingAction?.id === message.clientActionId) {
+      this.clearPendingAction('rejected');
+      return;
+    }
+    if (message?.type !== 'state_update' || !Array.isArray(message.actionAcks) || !this._pendingAction) {
+      return;
+    }
+    const acknowledgement = message.actionAcks.find((ack: any) =>
+      ack?.clientActionId === this._pendingAction?.id &&
+      ack?.playerIndex === this._playerIndex
+    );
+    if (!acknowledgement) return;
+    const pending = this._pendingAction;
+    const latencyMs = Math.max(0, performance.now() - pending.sentAt);
+    this.clearPendingAction(null);
+    this.dispatch({
+      type: 'action_acknowledged',
+      actionType: pending.actionType,
+      clientActionId: pending.id,
+      latencyMs,
+    });
+  }
+
+  private clearPendingAction(reason: string | null) {
+    if (this._pendingActionTimer) {
+      clearTimeout(this._pendingActionTimer);
+      this._pendingActionTimer = null;
+    }
+    const pending = this._pendingAction;
+    this._pendingAction = null;
+    if (pending && reason) {
+      this.dispatch({
+        type: 'action_cleared',
+        actionType: pending.actionType,
+        clientActionId: pending.id,
+        reason,
+      });
+    }
+  }
+
+  setRoomInfo(code: string, index: number, reconnectToken?: string) {
+    if (code !== this._roomCode) {
+      this._revisionGate.reset(code);
+    }
     this._roomCode = code;
     this._playerIndex = index;
+    if (reconnectToken) this._reconnectToken = reconnectToken;
     try {
       sessionStorage.setItem('sgmahjong_room_code', code);
       sessionStorage.setItem('sgmahjong_player_index', String(index));
+      if (this._reconnectToken) {
+        sessionStorage.setItem('sgmahjong_reconnect_token', this._reconnectToken);
+      }
     } catch {
       // ignore storage failures
     }
@@ -152,24 +243,35 @@ class GameConnection {
   disconnect() {
     this._manualDisconnect = true;
     this.cancelReconnect();
-    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
-      this.ws = null;
-      this._connected = false;
-    } else if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    const socket = this.ws;
+    this.ws = null;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {
+        socket.onopen = () => {
+          try {
+            socket.close();
+          } catch {
+            // ignore a socket that never completed connecting
+          }
+        };
+      }
     }
     if (this._exitHooksInstalled && typeof window !== 'undefined') {
       window.removeEventListener('pagehide', this._leaveRoomOnExit);
       window.removeEventListener('beforeunload', this._leaveRoomOnExit);
     }
     this._connected = false;
+    this.clearPendingAction('disconnected');
     this._playerIndex = -1;
     this._roomCode = '';
-    this.handlers.clear();
+    this._reconnectToken = '';
+    this._revisionGate.reset();
     try {
       sessionStorage.removeItem('sgmahjong_room_code');
       sessionStorage.removeItem('sgmahjong_player_index');
+      sessionStorage.removeItem('sgmahjong_reconnect_token');
     } catch {
       // ignore storage failures
     }
@@ -179,9 +281,13 @@ class GameConnection {
   clearRoomInfo() {
     this._roomCode = '';
     this._playerIndex = -1;
+    this._reconnectToken = '';
+    this.clearPendingAction('room_cleared');
+    this._revisionGate.reset();
     try {
       sessionStorage.removeItem('sgmahjong_room_code');
       sessionStorage.removeItem('sgmahjong_player_index');
+      sessionStorage.removeItem('sgmahjong_reconnect_token');
     } catch {
       // ignore storage failures
     }

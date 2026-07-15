@@ -1,9 +1,11 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { memo, useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useGameStore } from '../store/gameStore';
 import { Tile, MeldDisplay, EmptyTile } from './Tile';
 import { isBonus, isFei } from '../game/tiles';
 import { calculateTai } from '../game/rules';
 import { connection } from '../utils/connection';
+import type { Tile as TileType } from '../types/mahjong';
 
 const WIND_CHARS: Record<string, string> = { east: '(East) \u6771', south: '(South) \u5357', west: '(West) \u897F', north: '(North) \u5317' };
 const ROUND_CHARS: Record<string, string> = { east: '\u6771', south: '\u5357', west: '\u897F', north: '\u5317' };
@@ -13,8 +15,99 @@ function formatChipBalance(chips: number): string {
   return Number.isInteger(chips) ? chips.toLocaleString('en-US') : chips.toFixed(2).replace(/\.00$/, '');
 }
 
+const FaceDownHand = memo(function FaceDownHand({
+  hand,
+  rotate,
+  className,
+}: {
+  hand: TileType[];
+  rotate?: number;
+  className: string;
+}) {
+  return (
+    <div className={className}>
+      {hand.filter(tile => !isBonus(tile)).map((tile, index) => (
+        <Tile key={index} tile={tile} faceDown size="sm" rotate={rotate} />
+      ))}
+    </div>
+  );
+});
+
+const InteractiveHand = memo(function InteractiveHand({
+  hand,
+  selectedTile,
+  compact,
+  onSelect,
+}: {
+  hand: TileType[];
+  selectedTile: number | null;
+  compact: boolean;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <div className="flex gap-1 flex-nowrap overflow-x-auto justify-start sm:justify-center px-1 pb-1 w-full max-w-full [scrollbar-width:none] [-ms-overflow-style:none]">
+      {hand.map((tile, index) => isBonus(tile) ? null : (
+        <Tile
+          key={`tile-${index}`}
+          tile={tile}
+          selected={selectedTile === index}
+          onClick={() => onSelect(index)}
+          size={compact ? 'sm' : 'md'}
+        />
+      ))}
+      {hand.length === 0 && (
+        <span className="text-green-400/50 text-sm whitespace-nowrap">No tiles</span>
+      )}
+    </div>
+  );
+});
+
 export function GameTable() {
-  const { players, wall, phase, currentPlayerIndex, message, roundWind, config, waitingForClaim, drawTile, discardTile, claimTile, passClaim, winner, discardHistory, selfDrawWin, selfDrawWinAction, passSelfDrawWin, isMultiplayer, isHost, myPlayerIndex, diceResults, lastAction, selfKongData, selfKongAction, passSelfKong, dealerCount, dealerPlayerId, roomPaused } = useGameStore();
+  const {
+    players,
+    wall,
+    phase,
+    currentPlayerIndex,
+    message,
+    roundWind,
+    config,
+    waitingForClaim,
+    winner,
+    discardHistory,
+    selfDrawWin,
+    isMultiplayer,
+    myPlayerIndex,
+    lastAction,
+    selfKongData,
+    dealerCount,
+    dealerPlayerId,
+    roomPaused,
+    waitingForRemoteAction,
+    pendingRemoteActionLabel,
+    lastRemoteActionLatencyMs,
+  } = useGameStore(useShallow(state => ({
+    players: state.players,
+    wall: state.wall,
+    phase: state.phase,
+    currentPlayerIndex: state.currentPlayerIndex,
+    message: state.message,
+    roundWind: state.roundWind,
+    config: state.config,
+    waitingForClaim: state.waitingForClaim,
+    winner: state.winner,
+    discardHistory: state.discardHistory,
+    selfDrawWin: state.selfDrawWin,
+    isMultiplayer: state.isMultiplayer,
+    myPlayerIndex: state.myPlayerIndex,
+    lastAction: state.lastAction,
+    selfKongData: state.selfKongData,
+    dealerCount: state.dealerCount,
+    dealerPlayerId: state.dealerPlayerId,
+    roomPaused: state.roomPaused,
+    waitingForRemoteAction: state.waitingForRemoteAction,
+    pendingRemoteActionLabel: state.pendingRemoteActionLabel,
+    lastRemoteActionLatencyMs: state.lastRemoteActionLatencyMs,
+  })));
   const [selectedTile, setSelectedTile] = useState<number | null>(null);
   const [chiSelection, setChiSelection] = useState<{ display: any[]; handTiles: any[] }[] | null>(null);
   const [inactiveWarning, setInactiveWarning] = useState<string | null>(null);
@@ -110,21 +203,21 @@ export function GameTable() {
   }, [players, wall, phase, currentPlayerIndex, roundWind, config, winner]);
 
   const handleDiscard = () => {
-    if (roomPaused || selectedTile === null || !isHumanTurn) return;
+    if (roomPaused || waitingForRemoteAction || selectedTile === null || !isHumanTurn) return;
     const st = useGameStore.getState();
     const hIdx = (st.myPlayerIndex ?? 0);
     if (st.isMultiplayer) {
-      connection.send({ type: 'action', actionType: 'discard', data: { tileIndex: selectedTile, playerIdx: hIdx } });
+      if (!connection.sendGameAction('discard', { tileIndex: selectedTile, playerIdx: hIdx })) return;
     } else {
       st.discardTile(hIdx, selectedTile);
     }
     setSelectedTile(null);
   };
 
-  const handleTileClick = (index: number) => {
-    if (roomPaused || !isHumanTurn) return;
+  const handleTileClick = useCallback((index: number) => {
+    if (roomPaused || waitingForRemoteAction || !isHumanTurn) return;
     setSelectedTile(prev => (prev === index ? null : index));
-  };
+  }, [roomPaused, waitingForRemoteAction, isHumanTurn]);
 
   const handleChiOpen = () => {
     if (roomPaused) return;
@@ -150,13 +243,14 @@ export function GameTable() {
     setChiSelection(null);
   };
 
-  const sendAction = (actionType: string, data?: any) => {
+  const sendAction = (actionType: string, data?: any): boolean => {
     const st = useGameStore.getState();
-    if (st.roomPaused) return;
+    if (st.roomPaused || st.waitingForRemoteAction) return false;
     if (st.isMultiplayer && connection.connected) {
       const hIdx = (st.myPlayerIndex ?? 0);
-      connection.send({ type: 'action', actionType, data: { playerIdx: hIdx, ...data } });
+      return connection.sendGameAction(actionType, { playerIdx: hIdx, ...data });
     }
+    return false;
   };
 
   const handleClaim = (action: string, chiTiles?: any[]) => {
@@ -193,11 +287,7 @@ export function GameTable() {
                 - {playerTai[topPlayer.id]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(topPlayer))} chips
               </span>
             </span>
-            <div className="flex gap-0.5 flex-wrap justify-center">
-              {topPlayer.hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
-                <Tile key={i} tile={t} faceDown={true} size="sm" />
-              ))}
-            </div>
+            <FaceDownHand hand={topPlayer.hand} className="flex gap-0.5 flex-wrap justify-center" />
             {/* Melds + Bonus tiles in one row */}
             <div className="flex items-center justify-center gap-1 sm:gap-2 flex-wrap">
               {topPlayer.melds.length > 0 && (
@@ -231,11 +321,7 @@ export function GameTable() {
               </div>
               <span className="text-yellow-300 text-[9px] sm:text-xs leading-4">- {playerTai[leftPlayer.id]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(leftPlayer))} chips</span>
               <div className="flex items-start gap-2 sm:gap-3">
-                <div className="flex flex-col -space-y-2.5">
-                  {leftPlayer.hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
-                    <Tile key={i} tile={t} faceDown={true} size="sm" rotate={90} />
-                  ))}
-                </div>
+                <FaceDownHand hand={leftPlayer.hand} rotate={90} className="flex flex-col -space-y-2.5" />
                 {currentPlayerIndex === leftPlayer.id && phase === 'playing' && <div className="self-center text-yellow-400 text-base sm:text-lg animate-pulse">◄</div>}
                 {leftPlayer.bonusTiles && leftPlayer.bonusTiles.length > 0 && (
                   <div className="flex flex-col gap-0.5 items-center">
@@ -317,11 +403,7 @@ export function GameTable() {
                   </div>
                 )}
                 {currentPlayerIndex === rightPlayer.id && phase === 'playing' && <div className="self-center text-yellow-400 text-base sm:text-lg animate-pulse">►</div>}
-                <div className="flex flex-col -space-y-2.5">
-                  {rightPlayer.hand.filter((t: any) => !isBonus(t)).map((t: any, i: number) => (
-                    <Tile key={i} tile={t} faceDown={true} size="sm" rotate={-90} />
-                  ))}
-                </div>
+                <FaceDownHand hand={rightPlayer.hand} rotate={-90} className="flex flex-col -space-y-2.5" />
               </div>
               {rightPlayer.melds.length > 0 && (
                 <div className="flex flex-col gap-0.5 mt-1">
@@ -375,17 +457,12 @@ export function GameTable() {
           <span className="text-white text-[10px] sm:text-xs font-bold font-serif">{WIND_CHARS[bottomSeat]}</span>
           <span className="text-yellow-300 text-[9px] sm:text-xs">- {playerTai[humanIdx]?.totalTai ?? 0} tai - {formatChipBalance(getPlayerChips(human))} chips</span>
         </div>
-        <div className="flex gap-1 flex-nowrap overflow-x-auto justify-start sm:justify-center px-1 pb-1 w-full max-w-full [scrollbar-width:none] [-ms-overflow-style:none]">
-          {human.hand.filter((t: any) => !isBonus(t)).map((tile: any, idx: number) => {
-            const actualIdx = human.hand.indexOf(tile);
-            return (
-              <Tile key={'tile-' + idx} tile={tile} selected={selectedTile === actualIdx} onClick={() => handleTileClick(actualIdx)} size={isCompactViewport ? 'sm' : 'md'} />
-            );
-          })}
-          {human.hand.length === 0 && (
-            <span className="text-green-400/50 text-sm whitespace-nowrap">No tiles</span>
-          )}
-        </div>
+        <InteractiveHand
+          hand={human.hand}
+          selectedTile={selectedTile}
+          compact={isCompactViewport}
+          onSelect={handleTileClick}
+        />
 
         {roomPaused && (
           <div className="mb-2 text-center">
@@ -401,22 +478,22 @@ export function GameTable() {
                 <>
                   <button onClick={() => {
                     if (useGameStore.getState().isMultiplayer) {
-                      connection.send({ type: 'action', actionType: 'self_draw_win', data: { playerIdx: (useGameStore.getState().myPlayerIndex ?? 0) } });
+                      connection.sendGameAction('self_draw_win', { playerIdx: (useGameStore.getState().myPlayerIndex ?? 0) });
                     } else {
                       useGameStore.getState().selfDrawWinAction(useGameStore.getState().myPlayerIndex ?? 0);
                     }
-                  }} className="min-h-11 px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm animate-pulse w-full sm:w-auto">Win!</button>
+                  }} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm animate-pulse w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Win!</button>
                   <button onClick={() => {
                     if (useGameStore.getState().isMultiplayer) {
-                      connection.send({ type: 'action', actionType: 'pass_self_draw', data: { playerIdx: (useGameStore.getState().myPlayerIndex ?? 0) } });
+                      connection.sendGameAction('pass_self_draw', { playerIdx: (useGameStore.getState().myPlayerIndex ?? 0) });
                     } else {
                       useGameStore.getState().passSelfDrawWin();
                     }
-                  }} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm w-full sm:w-auto">Pass</button>
+                  }} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Pass</button>
                 </>
               )}
               {!selfDrawWin && isHumanTurn && selectedTile !== null && !isFei(human.hand[selectedTile]) && (
-                <button onClick={handleDiscard} className="min-h-11 px-3 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold text-sm transition-colors w-full sm:w-auto">Discard</button>
+                <button onClick={handleDiscard} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold text-sm transition-colors w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Discard</button>
               )}
               {!selfDrawWin && selfKongData && isHumanTurn && (
                 <>
@@ -426,41 +503,51 @@ export function GameTable() {
                     const st = useGameStore.getState();
                     if (selfKongData.meldIndex >= 0) {
                       if (st.isMultiplayer) {
-                        connection.send({ type: 'action', actionType: 'self_kong', data: { playerIdx: (st.myPlayerIndex ?? 0), meldIndex: selfKongData.meldIndex, handTileIndex: selfKongData.handTileIndex } });
+                        connection.sendGameAction('self_kong', { playerIdx: (st.myPlayerIndex ?? 0), meldIndex: selfKongData.meldIndex, handTileIndex: selfKongData.handTileIndex });
                       } else {
                         st.selfKongAction(st.myPlayerIndex ?? 0, selfKongData.meldIndex, selfKongData.handTileIndex);
                       }
                     } else {
                       if (st.isMultiplayer) {
-                        connection.send({ type: 'action', actionType: 'concealed_kong', data: { playerIdx: (st.myPlayerIndex ?? 0), tileIndex: selfKongData.handTileIndex } });
+                        connection.sendGameAction('concealed_kong', { playerIdx: (st.myPlayerIndex ?? 0), tileIndex: selfKongData.handTileIndex });
                       } else {
                         st.selfKongAction(st.myPlayerIndex ?? 0, -1, selfKongData.handTileIndex);
                       }
                     }
-                    st.passSelfKong();
-                  }} className="min-h-11 px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Kong</button>
+                    if (!st.isMultiplayer) st.passSelfKong();
+                  }} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Kong</button>
                   <button onClick={() => {
                     const st = useGameStore.getState();
                     if (st.isMultiplayer) {
-                      connection.send({ type: 'action', actionType: 'pass_self_kong', data: { playerIdx: (st.myPlayerIndex ?? 0) } });
+                      connection.sendGameAction('pass_self_kong', { playerIdx: (st.myPlayerIndex ?? 0) });
                     } else {
                       st.passSelfKong();
                     }
-                  }} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm w-full sm:w-auto">Pass</button>
+                  }} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Pass</button>
                 </>
               )}
             </>
           )}
           {hasClaimOptions && !roomPaused && (
             <>
-              {eligibleActions.includes('win') && <button onClick={() => handleClaim('win')} className="min-h-11 px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Win!</button>}
-              {eligibleActions.includes('kong') && <button onClick={() => handleClaim('kong')} className="min-h-11 px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Kong</button>}
-              {eligibleActions.includes('pung') && <button onClick={() => handleClaim('pung')} className="min-h-11 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Pung</button>}
-              {eligibleActions.includes('chi') && chiSelection === null && <button onClick={handleChiOpen} className="min-h-11 px-3 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto">Chi</button>}
-              <button onClick={handlePassClaim} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm transition-colors w-full sm:w-auto">Pass</button>
+              {eligibleActions.includes('win') && <button onClick={() => handleClaim('win')} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Win!</button>}
+              {eligibleActions.includes('kong') && <button onClick={() => handleClaim('kong')} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Kong</button>}
+              {eligibleActions.includes('pung') && <button onClick={() => handleClaim('pung')} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Pung</button>}
+              {eligibleActions.includes('chi') && chiSelection === null && <button onClick={handleChiOpen} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg font-bold text-sm transition-colors animate-pulse w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Chi</button>}
+              <button onClick={handlePassClaim} disabled={waitingForRemoteAction} className="min-h-11 px-3 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg font-bold text-sm transition-colors w-full sm:w-auto disabled:cursor-wait disabled:opacity-60">Pass</button>
             </>
           )}
         </div>
+        {isMultiplayer && waitingForRemoteAction && (
+          <div className="mt-1 text-center text-[10px] font-bold text-yellow-200 sm:text-xs" role="status" aria-live="polite">
+            Sending {String(pendingRemoteActionLabel || 'move').replace(/_/g, ' ')}...
+          </div>
+        )}
+        {isMultiplayer && !waitingForRemoteAction && typeof lastRemoteActionLatencyMs === 'number' && lastRemoteActionLatencyMs >= 250 && (
+          <div className="mt-1 text-center text-[10px] text-yellow-300/80 sm:text-xs">
+            Move confirmed in {lastRemoteActionLatencyMs} ms
+          </div>
+        )}
       </div>
     </div>
   );

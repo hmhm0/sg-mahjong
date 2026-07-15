@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { type Tile as TileType } from '../types/mahjong';
 import { TileImage, TileImageBack } from './TileImage';
 
@@ -13,7 +14,7 @@ interface TileProps {
 
 const PIXEL_SIZES = { sm: 34, md: 44, lg: 48, xl: 52 };
 
-export function Tile({ tile, selected, onClick, faceDown, size = "md", highlight, rotate }: TileProps) {
+function TileComponent({ tile, selected, onClick, faceDown, size = "md", highlight, rotate }: TileProps) {
   const px = PIXEL_SIZES[size];
   const rotation = rotate ?? 0;
 
@@ -47,7 +48,25 @@ export function Tile({ tile, selected, onClick, faceDown, size = "md", highlight
   );
 }
 
-export function MeldDisplay({ tiles, type, size = 'sm' }: { tiles: TileType[]; type: string; size?: 'sm' | 'md' }) {
+function sameTile(a: TileType, b: TileType): boolean {
+  if (a.category !== b.category) return false;
+  if (a.category === 'suit' && b.category === 'suit') return a.suit === b.suit && a.value === b.value;
+  if (a.category === 'honor' && b.category === 'honor') return a.type === b.type;
+  if (a.category === 'bonus' && b.category === 'bonus') return a.bonusType === b.bonusType && a.id === b.id;
+  return a.category === 'fei' && b.category === 'fei';
+}
+
+export const Tile = memo(TileComponent, (previous, next) =>
+  previous.selected === next.selected &&
+  previous.faceDown === next.faceDown &&
+  previous.size === next.size &&
+  previous.highlight === next.highlight &&
+  previous.rotate === next.rotate &&
+  previous.onClick === next.onClick &&
+  (Boolean(previous.faceDown) || sameTile(previous.tile, next.tile))
+);
+
+function MeldDisplayComponent({ tiles, type, size = 'sm' }: { tiles: TileType[]; type: string; size?: 'sm' | 'md' }) {
   return (
     <div className="flex items-center gap-0.5">
      {tiles.map((t, i) => (
@@ -56,6 +75,13 @@ export function MeldDisplay({ tiles, type, size = 'sm' }: { tiles: TileType[]; t
    </div>
   );
 }
+
+export const MeldDisplay = memo(MeldDisplayComponent, (previous, next) =>
+  previous.type === next.type &&
+  previous.size === next.size &&
+  previous.tiles.length === next.tiles.length &&
+  previous.tiles.every((tile, index) => sameTile(tile, next.tiles[index]))
+);
 
 export function EmptyTile({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' | 'xl' }) {
   const px = PIXEL_SIZES[size];

@@ -25,7 +25,12 @@ export function HostGame() {
       const storedRoom = connection.getStoredRoomInfo();
       if (storedRoom && storedRoom.playerIndex === 0 && !attemptedStoredRejoinRef.current) {
         attemptedStoredRejoinRef.current = true;
-        connection.send({ type: 'rejoin_room', code: storedRoom.code, playerIndex: 0 });
+        connection.send({
+          type: 'rejoin_room',
+          code: storedRoom.code,
+          playerIndex: 0,
+          reconnectToken: storedRoom.reconnectToken,
+        });
         setStatus('Rejoining room...');
       } else {
         pendingFreshCreateRef.current = false;
@@ -39,11 +44,19 @@ export function HostGame() {
     const unsubRoom = connection.on('room_created', (msg) => {
       setError('');
       setRoomCode(msg.code);
-      connection.setRoomInfo(msg.code, 0);
+      connection.setRoomInfo(msg.code, 0, msg.reconnectToken);
       setStatus('Waiting for players...');
       track('host_room_created', { room_code: msg.code });
 
 
+    });
+
+    const unsubRoomJoined = connection.on('room_joined', (msg) => {
+      if (msg.playerIndex !== 0) return;
+      setError('');
+      setRoomCode(msg.code);
+      connection.setRoomInfo(msg.code, 0, msg.reconnectToken);
+      setStatus('Room restored. Waiting for players...');
     });
 
     const unsubSnapshot = connection.on('room_snapshot', (msg) => {
@@ -71,6 +84,7 @@ export function HostGame() {
         });
       }
       if (msg.started) {
+        startedRef.current = true;
         setStatus('Game in progress...');
       }
       useGameStore.setState({
@@ -85,16 +99,6 @@ export function HostGame() {
         setPlayers(prev => {
           const next = [...prev];
           next[slotIdx] = `Player ${slotIdx + 1}`;
-          // Re-broadcast all known real-player names so the new joiner sees them
-          setTimeout(() => {
-            for (let i = 0; i < next.length; i++) {
-              if (i === slotIdx) continue; // Skip the joining player (they'll send their own name)
-              const n = next[i];
-              if (n && !AI_BOT_NAMES.includes(n)) {
-                connection.send({ type: 'player_name', playerIndex: i, name: n });
-              }
-            }
-          }, 200);
           return next;
         });
       }
@@ -146,20 +150,6 @@ export function HostGame() {
       setRoomCode('');
     });
 
-    const unsubStateUpdate = connection.on('state_update', (msg) => {
-      startedRef.current = true;
-      const state = msg.state;
-      if (!state) return;
-      state.isMultiplayer = true;
-      state.isHost = true;
-      state.myPlayerIndex = 0;
-      const pending = useGameStore.getState().multiplayerStartPending;
-      useGameStore.setState({
-        ...state,
-        multiplayerStartPending: pending,
-      });
-    });
-
     const unsubDiceResults = connection.on('dice_results', (msg: any) => {
       const results = {
         dice: msg.dice as [number, number, number][],
@@ -197,7 +187,7 @@ export function HostGame() {
     });
 
     return () => {
-      unsubRoom(); unsubJoin(); unsubLeft(); unsubError(); unsubReady(); unsubName(); unsubRoomClosed(); unsubSnapshot(); unsubStateUpdate(); unsubDiceResults(); unsubGameStarted();
+      unsubRoom(); unsubRoomJoined(); unsubJoin(); unsubLeft(); unsubError(); unsubReady(); unsubName(); unsubRoomClosed(); unsubSnapshot(); unsubDiceResults(); unsubGameStarted();
       // Keep subscription & action listener alive after game starts (HostGame unmounts)
       if (!startedRef.current) {
         connection.send({ type: 'leave_room' });
@@ -244,11 +234,8 @@ export function HostGame() {
     attemptedStoredRejoinRef.current = false;
     pendingFreshCreateRef.current = false;
     useGameStore.setState({ multiplayerStartPending: false, diceResults: null });
-    connection.clearRoomInfo();
     connection.send({ type: 'host_quit' });
-    setTimeout(() => {
-      connection.disconnect();
-    }, 150);
+    connection.disconnect();
     navigate('/');
   };
 

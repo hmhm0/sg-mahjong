@@ -549,11 +549,40 @@ function isPongPongHu(hand: Tile[], melds: Meld[], winningTile?: Tile): boolean 
   return true;
 }
 
-// ── Kang Kang Hu (杠杠胡) Detection ──────────────────────
+// ── Kan Kan Hu Detection ─────────────────────────────────
 
-// Self-draw win with 4 concealed pungs/kongs and concealed pair.
-// No exposed melds — all tiles are in hand as triplets/quads + a pair.
-function isKangKangHu(hand: Tile[], melds: Meld[], selfDraw: boolean): boolean {
+function canCompleteKanKanHuTiles(playableHand: Tile[]): boolean {
+  const pool = buildPool(playableHand);
+  if (pool.total !== 14) return false;
+
+  const leavesFourNaturalPungs = (counts: Record<string, number>, remainingFei: number): boolean =>
+    remainingFei === 0 && Object.values(counts).every(count => count % 3 === 0);
+
+  // The concealed eyes can use the normal Fei pair rule, but Fei cannot fill pungs.
+  if (pool.fei >= 2 && leavesFourNaturalPungs(pool.counts, pool.fei - 2)) {
+    return true;
+  }
+
+  for (const key of Object.keys(pool.counts)) {
+    const naturalCount = pool.counts[key];
+    if (naturalCount >= 2) {
+      const nextCounts = cloneCounts(pool.counts);
+      nextCounts[key] -= 2;
+      if (leavesFourNaturalPungs(nextCounts, pool.fei)) return true;
+    }
+    if (naturalCount >= 1 && pool.fei >= 1) {
+      const nextCounts = cloneCounts(pool.counts);
+      nextCounts[key] -= 1;
+      if (leavesFourNaturalPungs(nextCounts, pool.fei - 1)) return true;
+    }
+  }
+
+  return false;
+}
+
+// Zi Mo with four concealed natural pungs and concealed eyes.
+// Any exposed meld disqualifies the hand.
+function isKanKanHu(hand: Tile[], melds: Meld[], selfDraw: boolean): boolean {
   // Must be self-draw
   if (!selfDraw) return false;
 
@@ -561,7 +590,7 @@ function isKangKangHu(hand: Tile[], melds: Meld[], selfDraw: boolean): boolean {
   if (melds.length > 0) return false;
 
   const playableHand = hand.filter(t => t.category !== 'bonus');
-  return canCompleteHand(playableHand, 0, 'pungs');
+  return canCompleteKanKanHuTiles(playableHand);
 }
 
 // ── Pure Honours (字一色) Detection ──────────────────────
@@ -682,6 +711,7 @@ export function isAutomaticWinResult(
     name.startsWith('Thirteen Wonders') ||
     name.startsWith('Big Three Dragons') ||
     name.startsWith('Da Xi Si') ||
+    name.startsWith('Kan Kan Hu') ||
     name.startsWith('Shi Ba Luo Han')
   );
 }
@@ -719,6 +749,7 @@ function getLimitHandScore(
     thirteenWonders?: boolean;
     qiQiangYi?: boolean;
     huaHu?: boolean;
+    kanKanHu?: boolean;
   } = {},
 ): { name: string; tai: number } | null {
   if (flags.tianHu) return { name: 'Tian Hu (天胡)', tai: 10 };
@@ -729,6 +760,7 @@ function getLimitHandScore(
   if (flags.huaHu) return { name: 'Hua Hu (花胡)', tai: 12 };
   if (isBigThreeDragons(hand, melds)) return { name: 'Big Three Dragons', tai: 10 };
   if (isDaXiSi(hand, melds)) return { name: 'Da Xi Si (大四喜)', tai: 10 };
+  if (flags.kanKanHu) return { name: 'Kan Kan Hu (坎坎胡)', tai: 8 };
   if (isShiBaLuoHan(hand, melds)) return { name: 'Shi Ba Luo Han (十八罗汉)', tai: 18 };
   return null;
 }
@@ -751,13 +783,19 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
     thirteenWonders,
     qiQiangYi,
     huaHu,
+    kanKanHu: !visibleOnly && isKanKanHu(hand, melds, selfDraw),
   });
   if (limitHand) {
+    const limitBreakdown = [limitHand];
+    if (limitHand.name.startsWith('Kan Kan Hu')) {
+      limitBreakdown.push({ name: 'Self-Draw', tai: 1 });
+    }
+    const limitTai = limitBreakdown.reduce((sum, entry) => sum + entry.tai, 0);
     return {
-      tai: limitHand.tai,
-      breakdown: [limitHand],
+      tai: limitTai,
+      breakdown: limitBreakdown,
       feiPenalty: 0,
-      totalTai: limitHand.tai,
+      totalTai: limitTai,
     };
   }
 
@@ -885,18 +923,9 @@ export function calculateTai(state: GameState, playerId: number, selfDraw: boole
     breakdown.push({ name: 'Self-Draw', tai: 1 });
   }
 
-  // Kang Kang Hu (杠杠胡): +8 tai
-  // Self-draw with 4 concealed pungs/kongs and concealed pair, no exposed melds
-  let kangKangHuApplied = false;
-  if (!visibleOnly && isKangKangHu(hand, melds, selfDraw)) {
-    tai += 8;
-    breakdown.push({ name: 'Kang Kang Hu (杠杠胡)', tai: 8 });
-    kangKangHuApplied = true;
-  }
-
   // Concealed hand (Men Qing / 门清): +1 tai
   // Win without exposing any melds (no chi/pung/kong), must be self-draw
-  if (!kangKangHuApplied && !visibleOnly && selfDraw && melds.length === 0) {
+  if (!visibleOnly && selfDraw && melds.length === 0) {
     tai += 1;
     breakdown.push({ name: 'Concealed Hand (Men Qing)', tai: 1 });
   }

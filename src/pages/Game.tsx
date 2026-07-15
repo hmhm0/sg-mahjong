@@ -3,8 +3,10 @@ import { GameTable } from '../components/GameTable';
 import { Tile as MahjongTile, MeldDisplay } from '../components/Tile';
 import { useGameStore } from '../store/gameStore';
 import { connection } from '../utils/connection';
+import { navigate } from '../utils/navigation';
 import { calculateTai } from '../game/rules';
-import { formatPayoutAmount, getPayoutTableLabel } from '../game/chips';
+import { formatPayoutAmount, getChipSettlementRuleText, getChipSettlementTransfers, getChipStandings, getPayoutTableLabel, isChipMatchOver } from '../game/chips';
+import { isSelfDrawWinMethod } from '../game/winMethods';
 import type { Tile } from '../types/mahjong';
 
 const WIN_HEADLINE_PRIORITY = [
@@ -20,7 +22,7 @@ const WIN_HEADLINE_PRIORITY = [
   'Xiao Xi Si (小四喜)',
   'Pure Honours (字一色)',
   'Little Three Dragons',
-  'Kang Kang Hu (杠杠胡)',
+  'Kan Kan Hu (坎坎胡)',
   'Full Flush Sequence Hand (清一色平胡)',
   'Full Flush Triplets Hand (清一色碰碰胡)',
   'Full Flush',
@@ -55,6 +57,7 @@ function getSpecialPayoutLabel(
     item.name.startsWith('Hua Hu') ||
     item.name.startsWith('Big Three Dragons') ||
     item.name.startsWith('Da Xi Si') ||
+    item.name.startsWith('Kan Kan Hu') ||
     item.name.startsWith('Shi Ba Luo Han'),
   );
   if (!isSpecialHand) return null;
@@ -97,7 +100,7 @@ function describeTile(tile: Tile): string {
 
 export function Game() {
   const reset = useGameStore(s => s.reset);
-  const clearDebugLogs = useGameStore(s => s.clearDebugLogs);
+  const startNewMatch = useGameStore(s => s.startNewMatch);
   const isMultiplayer = useGameStore(s => s.isMultiplayer);
   const isHost = useGameStore(s => s.isHost);
   const phase = useGameStore(s => s.phase);
@@ -117,11 +120,11 @@ export function Game() {
   const roundWind = useGameStore(s => s.roundWind);
   const diceResults = useGameStore(s => s.diceResults);
   const nextRoundCountdown = useGameStore(s => s.nextRoundCountdown);
-  const debugLogs = useGameStore(s => s.debugLogs);
   const roomPaused = useGameStore(s => s.roomPaused);
   const [playAgainReady, setPlayAgainReady] = useState<number[]>([]);
+  const [matchReady, setMatchReady] = useState<boolean[]>([false, false, false, false]);
+  const [rematchCountdown, setRematchCountdown] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [showWinPopup, setShowWinPopup] = useState(true);
   const [winCountdown, setWinCountdown] = useState(30);
   const [winPopupTimerEnabled, setWinPopupTimerEnabled] = useState(true);
@@ -168,7 +171,7 @@ export function Game() {
       winMethod,
     } as any;
 
-    const selfDraw = winMethod === 'self_draw' || winMethod === 'kang_shang' || winMethod === 'men_hu';
+    const selfDraw = isSelfDrawWinMethod(winMethod, winningDiscardPlayer);
     const baseHand = winnerPlayer.hand || [];
     const remainingCounts = new Map<string, number>();
     for (const tile of baseHand) {
@@ -228,11 +231,17 @@ export function Game() {
     ? (players[chipSettlement.winnerIndex]?.name || `P${chipSettlement.winnerIndex + 1}`)
     : '';
   const specialPayoutLabel = winSummary ? getSpecialPayoutLabel(winSummary.breakdown, Boolean(config.specialTaiCapEnabled), config.specialTaiCap) : null;
+  const matchOver = phase === 'finished' && winner !== null && isChipMatchOver(players, config);
+  const chipStandings = useMemo(() => getChipStandings(players), [players]);
+  const topChipAmount = chipStandings[0]?.chips ?? 0;
+  const topPlayers = chipStandings.filter(standing => standing.chips === topChipAmount);
 
   const realPlayerCount = useMemo(() => players.filter(p => p.isHuman).length, [players]);
   const readyCount = playAgainReady.filter(playerId => players.some(p => p.id === playerId && p.isHuman)).length;
   const localReadyPlayerId = isHost ? 0 : (connection.playerIndex >= 0 ? connection.playerIndex : 0);
   const isLocalReady = playAgainReady.includes(localReadyPlayerId);
+  const matchReadyCount = matchReady.filter(Boolean).length;
+  const isLocalMatchReady = Boolean(matchReady[localReadyPlayerId]);
 
   // Reset history on new round
   useEffect(() => {
@@ -244,6 +253,8 @@ export function Game() {
       setPlayAgainReady([]);
       readyRef.current = [];
       hasAutoAdvancedRef.current = false;
+      setMatchReady([false, false, false, false]);
+      setRematchCountdown(null);
     }
   }, [phase, roomPaused]);
 
@@ -262,6 +273,13 @@ export function Game() {
     lastPhaseRef.current = phase;
   }, [phase, winner, roomPaused, nextRoundCountdown]);
 
+  useEffect(() => {
+    if (!matchOver) return;
+    if (isMultiplayer) return;
+    setMatchReady(players.map(player => !player.isHuman));
+    setRematchCountdown(null);
+  }, [matchOver, isMultiplayer, players]);
+
   // Listen for player_ready updates (post-game)
   useEffect(() => {
     const unsub = connection.on('player_ready', (msg) => {
@@ -277,23 +295,31 @@ export function Game() {
     };
   }, []);
 
-  // Keep remote clients synced to the host's authoritative game state.
   useEffect(() => {
-    const unsub = connection.on('state_update', (msg) => {
-      const state = msg.state;
-      if (!state) return;
-      state.isMultiplayer = true;
-      state.isHost = connection.playerIndex === 0;
-      state.myPlayerIndex = connection.playerIndex >= 0 ? connection.playerIndex : 0;
-      useGameStore.setState(state);
+    const unsubReady = connection.on('match_ready_state', (msg) => {
+      if (Array.isArray(msg.ready) && msg.ready.length === 4) {
+        setMatchReady(msg.ready.map(Boolean));
+      }
+      setRematchCountdown(Number.isInteger(msg.countdown) ? msg.countdown : null);
+    });
+    const unsubCountdown = connection.on('rematch_countdown', (msg) => {
+      setRematchCountdown(Number.isInteger(msg.countdown) ? msg.countdown : null);
+    });
+    const unsubSnapshot = connection.on('room_snapshot', (msg) => {
+      if (Array.isArray(msg.matchReady) && msg.matchReady.length === 4) {
+        setMatchReady(msg.matchReady.map(Boolean));
+      }
+      setRematchCountdown(Number.isInteger(msg.rematchCountdown) ? msg.rematchCountdown : null);
     });
     return () => {
-      unsub();
+      unsubReady();
+      unsubCountdown();
+      unsubSnapshot();
     };
   }, []);
 
   useEffect(() => {
-    if (phase !== 'finished' || winner === null) return;
+    if (phase !== 'finished' || winner === null || matchOver) return;
     if (!winPopupTimerEnabled || !showWinPopup) return;
     if (winCountdown <= 0) {
       setShowWinPopup(false);
@@ -302,11 +328,11 @@ export function Game() {
     }
     const t = setTimeout(() => setWinCountdown(c => c - 1), 1000);
     return () => clearTimeout(t);
-  }, [phase, winner, showWinPopup, winCountdown, winPopupTimerEnabled]);
+  }, [phase, winner, matchOver, showWinPopup, winCountdown, winPopupTimerEnabled]);
 
   useEffect(() => {
     const canAutoAdvance = !isMultiplayer || isHost;
-    if (!canAutoAdvance || phase !== 'finished' || winner === null || hasAutoAdvancedRef.current || roomPaused) return;
+    if (!canAutoAdvance || phase !== 'finished' || winner === null || matchOver || hasAutoAdvancedRef.current || roomPaused) return;
     const state = useGameStore.getState();
     const allReady = state.players.every((p: any) => !p.isHuman || readyRef.current.includes(p.id));
     if (!allReady || readyRef.current.length === 0) {
@@ -346,7 +372,26 @@ export function Game() {
     setWinCountdown(30);
     setWinPopupTimerEnabled(true);
     hasAutoAdvancedRef.current = false;
-  }, [playAgainReady, phase, winner, isHost, isMultiplayer, config, nextRoundCountdown, roomPaused]);
+  }, [playAgainReady, phase, winner, matchOver, isHost, isMultiplayer, config, nextRoundCountdown, roomPaused]);
+
+  useEffect(() => {
+    if (!matchOver || isMultiplayer || roomPaused) return;
+    if (!matchReady.every(Boolean)) {
+      if (rematchCountdown !== null) setRematchCountdown(null);
+      return;
+    }
+    if (rematchCountdown === null) {
+      setRematchCountdown(5);
+      return;
+    }
+    if (rematchCountdown > 0) {
+      const timer = setTimeout(() => setRematchCountdown(value => value === null ? null : Math.max(0, value - 1)), 1000);
+      return () => clearTimeout(timer);
+    }
+    setMatchReady([false, false, false, false]);
+    setRematchCountdown(null);
+    startNewMatch(config);
+  }, [matchOver, isMultiplayer, roomPaused, matchReady, rematchCountdown, startNewMatch, config]);
 
   const closeWinPopup = () => {
     setShowWinPopup(false);
@@ -360,32 +405,21 @@ export function Game() {
 
   const handleQuit = () => {
     if (isMultiplayer) {
-      connection.send({ type: isHost ? 'host_quit' : 'leave_room' });
-      setTimeout(() => {
-        connection.disconnect();
-      }, 150);
+      connection.send({ type: 'quit_room' });
+      connection.disconnect();
     }
     reset();
+    navigate('/');
   };
 
-  const handlePlayAgain = () => {
-    if (isHost) {
-      connection.send({ type: 'player_ready', playerIndex: 0, ready: true });
-      setPlayAgainReady(prev => {
-        const next = [...prev.filter(i => i !== 0), 0];
-        readyRef.current = next;
-        return next;
-      });
-    } else {
-      const pi = connection.playerIndex >= 0 ? connection.playerIndex : 0;
-      const isNowReady = !playAgainReady.includes(pi);
-      connection.send({ type: 'player_ready', playerIndex: pi, ready: isNowReady });
-      setPlayAgainReady(prev => {
-        const next = isNowReady ? [...prev.filter(i => i !== pi), pi] : prev.filter(i => i !== pi);
-        readyRef.current = next;
-        return next;
-      });
+  const handleMatchPlayAgain = () => {
+    if (isMultiplayer) {
+      connection.send({ type: 'match_ready', ready: !isLocalMatchReady });
+      return;
     }
+    setMatchReady(current => current.map((ready, playerIndex) =>
+      players[playerIndex]?.isHuman ? !isLocalMatchReady : ready
+    ));
   };
 
   const toggleReady = () => {
@@ -400,7 +434,7 @@ export function Game() {
   };
 
   useEffect(() => {
-    if (phase !== 'finished' || winner === null || roomPaused) {
+    if (phase !== 'finished' || winner === null || matchOver || roomPaused) {
       if (nextRoundCountdown !== null) useGameStore.setState({ nextRoundCountdown: null });
       return;
     }
@@ -408,7 +442,7 @@ export function Game() {
     if (!allReady || playAgainReady.filter(playerId => players.some(p => p.id === playerId && p.isHuman)).length === 0) {
       if (nextRoundCountdown !== null) useGameStore.setState({ nextRoundCountdown: null });
     }
-  }, [phase, winner, players, playAgainReady, nextRoundCountdown, roomPaused]);
+  }, [phase, winner, matchOver, players, playAgainReady, nextRoundCountdown, roomPaused]);
 
   return (
       <div className="relative">
@@ -428,12 +462,6 @@ export function Game() {
       <div className="absolute top-2 right-2 sm:top-3 sm:right-3 z-10">
         <div className="flex gap-1.5 sm:gap-2">
           <button
-            onClick={() => setShowDebugLogs(true)}
-            className="px-2.5 py-1.5 sm:px-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold text-xs sm:text-sm transition-colors shadow-lg"
-          >
-            Dev Logs
-          </button>
-          <button
             onClick={() => setShowHistory(true)}
             className="px-2.5 py-1.5 sm:px-3 bg-blue-700 hover:bg-blue-600 text-white rounded-lg font-bold text-xs sm:text-sm transition-colors shadow-lg"
           >
@@ -441,83 +469,6 @@ export function Game() {
           </button>
         </div>
       </div>
-      {showDebugLogs && (
-        <div className={`fixed inset-0 bg-black/70 z-50 flex ${isCompactViewport ? 'items-end' : 'items-center justify-center'}`} onClick={() => setShowDebugLogs(false)}>
-          <div
-            className={`bg-slate-900 border border-slate-700 shadow-2xl flex flex-col w-full ${isCompactViewport ? 'max-w-none rounded-t-3xl h-[84dvh] px-3.5 pt-3.5 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]' : 'rounded-xl p-6 max-w-5xl mx-4 max-h-[85vh]'} `}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className={`flex items-center justify-between gap-2 ${isCompactViewport ? 'mb-2.5' : 'mb-3'}`}>
-              <div>
-                <h2 className={`${isCompactViewport ? 'text-base' : 'text-lg'} sm:text-xl font-bold text-white`}>Developer Logs</h2>
-                <p className="text-slate-400 text-[10px] sm:text-xs mt-0.5">{debugLogs.length} entries, newest first</p>
-              </div>
-              <div className="flex gap-1.5 shrink-0">
-                <button
-                  onClick={clearDebugLogs}
-                  className="px-2.5 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold text-[10px] sm:text-sm min-h-10 sm:min-h-11"
-                >
-                  Clear
-                </button>
-                <button
-                  onClick={() => setShowDebugLogs(false)}
-                  className="px-2.5 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg font-bold text-[10px] sm:text-sm min-h-10 sm:min-h-11"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="overflow-y-auto flex-1 space-y-1.5 pr-1 overscroll-contain">
-              {[...debugLogs].reverse().map((entry) => (
-                <details key={entry.id} className="rounded-md border border-slate-700 bg-slate-800/80 p-1.5 sm:p-1.5">
-                  {(() => {
-                    const reason = (entry.details as { reason?: string } | undefined)?.reason;
-                    return (
-                      <>
-                        <summary className="list-none cursor-pointer">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-slate-100 font-semibold text-[10px] sm:text-[11px] leading-4 sm:leading-5 truncate">{entry.message}</div>
-                              <div className="text-slate-400 text-[8px] sm:text-[9px]">{entry.type} | {entry.ts}</div>
-                            </div>
-                            <div className="text-slate-300 text-[8px] sm:text-[9px] text-right shrink-0 leading-4">
-                              <div>W {entry.wallCount}</div>
-                              <div>T P{entry.currentPlayerIndex}</div>
-                            </div>
-                          </div>
-                        </summary>
-                        <div className="mt-1 grid grid-cols-2 gap-1 text-[8px] sm:text-[9px] text-slate-300 leading-4">
-                          <div>Players: {entry.snapshot.players.length}</div>
-                          <div>Discards: {entry.snapshot.discardHistory.length}</div>
-                          <div className="col-span-2 flex flex-wrap gap-x-2 gap-y-0.5 text-[8px] sm:text-[9px] text-slate-300">
-                      {entry.snapshot.players.map(p => (
-                        <span key={p.playerIndex}>
-                          P{p.playerIndex + 1}: {p.name}
-                        </span>
-                      ))}
-                    </div>
-                    {reason && <div className="col-span-2">Reason: {reason}</div>}
-                    {entry.snapshot.waitingForClaim?.tile && <div>Claim Tile: {entry.snapshot.waitingForClaim.tile}</div>}
-                    {entry.snapshot.waitingForClaim && <div>Eligible: {entry.snapshot.waitingForClaim.eligiblePlayers.map(p => `P${p.playerIndex}:${p.actions.join('/')}`).join(', ') || 'none'}</div>}
-                        </div>
-                        <details className="mt-1">
-                          <summary className="cursor-pointer list-none text-[8px] sm:text-[9px] text-slate-400 hover:text-slate-200">Raw JSON</summary>
-                          <pre className="mt-1 text-[8px] sm:text-[9px] leading-4 text-slate-200 whitespace-pre-wrap overflow-x-auto max-h-32">
-{JSON.stringify(entry, null, 2)}
-                          </pre>
-                        </details>
-                      </>
-                    );
-                  })()}
-                </details>
-              ))}
-              {debugLogs.length === 0 && (
-                <div className="text-slate-400 text-xs sm:text-sm italic py-6 sm:py-8 text-center">No developer logs yet.</div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       {showHistory && (
         <div className={`fixed inset-0 bg-black/60 z-50 flex ${isCompactViewport ? 'items-end' : 'items-center justify-center'}`} onClick={() => setShowHistory(false)}>
           <div
@@ -542,7 +493,88 @@ export function Game() {
           </div>
         </div>
       )}
-      {phase === 'finished' && winner !== null && winSummary && (
+      {matchOver ? (
+        <div className={`fixed inset-0 z-50 bg-black/75 px-4 flex ${isCompactViewport ? 'items-end' : 'items-center justify-center'}`}>
+          <div className={`w-full overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(250,204,21,0.15),_transparent_38%),linear-gradient(180deg,_rgba(20,83,45,0.98),_rgba(5,46,22,0.99))] border border-yellow-400/35 shadow-2xl ${isCompactViewport ? 'max-w-none rounded-t-3xl max-h-[94dvh] p-4 pt-5 pb-[calc(env(safe-area-inset-bottom)+1rem)]' : 'max-w-lg rounded-2xl p-6 max-h-[88vh]'}`}>
+            <div className="text-center mb-4">
+              <div className="text-yellow-300 text-[10px] sm:text-xs uppercase tracking-[0.24em] mb-1">Match Over</div>
+              <h2 className="text-2xl sm:text-3xl font-black text-white">
+                {topPlayers.length === 1 ? `${topPlayers[0].name} leads` : 'Joint chip leaders'}
+              </h2>
+              <p className="mt-1 text-xs sm:text-sm text-green-200">A player reached $0 or a negative chip balance.</p>
+            </div>
+
+            <div className="rounded-xl border border-yellow-300/25 bg-black/20 p-2.5 sm:p-3 mb-4">
+              <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-yellow-200">Final Chip Standings</div>
+              <div className="space-y-1.5">
+                {chipStandings.map((standing) => {
+                  const isTop = standing.chips === topChipAmount;
+                  const rank = chipStandings.findIndex(entry => entry.chips === standing.chips) + 1;
+                  return (
+                    <div key={standing.playerId} className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 ${isTop ? 'border border-yellow-300/35 bg-yellow-400/10' : 'bg-white/5'}`}>
+                      <div className="min-w-0 flex items-center gap-2">
+                        <span className={`w-6 text-center text-xs font-black ${isTop ? 'text-yellow-300' : 'text-green-300'}`}>#{rank}</span>
+                        <span className={`truncate text-sm ${isTop ? 'font-bold text-yellow-100' : 'text-green-100'}`}>{standing.name}</span>
+                      </div>
+                      <span className={`shrink-0 text-sm font-black ${standing.chips <= 0 ? 'text-red-300' : isTop ? 'text-yellow-300' : 'text-white'}`}>
+                        {formatPayoutAmount(standing.chips)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-green-500/30 bg-green-950/45 p-3 mb-4">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-[10px] uppercase tracking-[0.2em] text-green-300">Play Again Status</span>
+                <span className="text-xs font-bold text-white">{matchReadyCount}/4 ready</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {players.map((player, playerIndex) => (
+                  <div key={player.id} className={`rounded-lg px-2.5 py-2 text-xs ${matchReady[playerIndex] ? 'bg-green-600/35 text-green-100' : 'bg-white/5 text-green-300'}`}>
+                    <div className="truncate font-semibold">{player.name}</div>
+                    <div className="mt-0.5 text-[10px] opacity-75">
+                      {matchReady[playerIndex] ? (player.isHuman ? 'Ready' : 'Bot ready') : 'Waiting'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {rematchCountdown !== null && (
+              <div className="mb-4 rounded-xl border border-yellow-400/50 bg-yellow-500/10 px-4 py-3 text-center">
+                <div className="text-[10px] uppercase tracking-[0.22em] text-yellow-200">New Match Starting</div>
+                <div className="mt-1 text-4xl font-black leading-none text-white">{rematchCountdown}s</div>
+                <div className="mt-1 text-xs text-green-200">
+                  {isMultiplayer ? 'Creating a new room with the same settings' : 'Resetting chips with the same settings'}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={handleMatchPlayAgain}
+                disabled={rematchCountdown !== null}
+                className={`min-h-12 rounded-xl px-3 py-3 text-sm font-bold transition-colors ${isLocalMatchReady ? 'bg-green-600 text-white' : 'bg-yellow-600 text-white hover:bg-yellow-500'} disabled:cursor-not-allowed disabled:opacity-70`}
+              >
+                {isLocalMatchReady ? 'Ready' : 'Play Again'}
+              </button>
+              <button
+                onClick={handleQuit}
+                className="min-h-12 rounded-xl bg-red-700 px-3 py-3 text-sm font-bold text-white hover:bg-red-600"
+              >
+                Quit
+              </button>
+            </div>
+            <p className="mt-3 text-center text-[10px] text-green-300/75">
+              {isMultiplayer
+                ? 'All four seats must be ready. Any player pressing Quit closes the room for everyone.'
+                : 'The three bots are ready automatically.'}
+            </p>
+          </div>
+        </div>
+      ) : phase === 'finished' && winner !== null && winSummary && (
         <>
       {showWinPopup ? (
             <div className={`fixed inset-0 bg-black/65 z-50 px-4 flex ${isCompactViewport ? 'items-end' : 'items-center justify-center'}`} onClick={closeWinPopup}>
@@ -635,29 +667,23 @@ export function Game() {
                           Payout capped at {chipSettlement.tai} tai from a {chipSettlement.rawTai}-tai win.
                         </span>
                       )}
-                      {chipSettlement.mode === 'discard'
-                        ? chipSettlement.settlementStyle === 'shooter'
-                          ? `Shooter pay: only the shooter pays ${formatPayoutAmount(chipSettlement.shooterPerTai)} for ${chipSettlement.tai} tai.`
-                          : `Non-shooter pay: each non-discarder pays ${formatPayoutAmount(chipSettlement.nonShooterPerTai)} and the discarder pays ${formatPayoutAmount(chipSettlement.selfDrawPerTai)} for ${chipSettlement.tai} tai.`
-                        : `Self-draw pay: each opponent pays ${formatPayoutAmount(chipSettlement.selfDrawPerTai)} for ${chipSettlement.tai} tai.`}
+                      {getChipSettlementRuleText(chipSettlement)}
                     </div>
                     <div className="mt-3 max-h-32 overflow-y-auto rounded-lg border border-yellow-300/20 bg-green-950/40 px-2.5 py-2 sm:px-3">
                       <div className="mb-1 text-[10px] sm:text-[11px] uppercase tracking-[0.18em] text-yellow-200">Who pays the winner</div>
                       <div className="space-y-1 text-[10px] sm:text-sm text-yellow-50">
-                        {chipSettlement.playerDeltas
-                          .filter(delta => delta.delta !== 0)
+                        {getChipSettlementTransfers(chipSettlement)
                           .map(delta => {
                             const player = players[delta.playerIndex];
                             const playerName = player?.name || `P${delta.playerIndex + 1}`;
                             const amount = formatPayoutAmount(Math.abs(delta.delta));
-                            const isWinner = delta.playerIndex === chipSettlement.winnerIndex;
                             return (
                               <div key={delta.playerIndex} className="flex items-center justify-between gap-2 rounded-md bg-white/5 px-2 py-1.5">
-                                <span className={`min-w-0 truncate ${isWinner ? 'font-bold text-yellow-200' : 'text-yellow-50'}`}>
+                                <span className={`min-w-0 truncate ${delta.isWinner ? 'font-bold text-yellow-200' : 'text-yellow-50'}`}>
                                   {playerName}
                                 </span>
-                                <span className={`shrink-0 text-right font-bold ${isWinner ? 'text-yellow-200' : 'text-red-200'}`}>
-                                  {isWinner ? `receives ${amount}` : `gives ${amount}`} to {settlementWinnerName}
+                                <span className={`shrink-0 text-right font-bold ${delta.isWinner ? 'text-yellow-200' : 'text-red-200'}`}>
+                                  {delta.isWinner ? `receives ${amount}` : `gives ${amount}`} to {settlementWinnerName}
                                 </span>
                               </div>
                             );
@@ -711,8 +737,15 @@ export function Game() {
         <div className="fixed inset-0 z-40 bg-black/45 pointer-events-none flex items-center justify-center">
           <div className="pointer-events-auto bg-red-900/95 border border-red-500/70 rounded-2xl px-6 py-4 shadow-2xl text-center max-w-sm mx-4">
             <div className="text-red-200 text-xs uppercase tracking-[0.2em] mb-1">Room Paused</div>
-            <div className="text-white font-bold text-lg">A player left the game.</div>
-            <div className="text-red-200 text-sm mt-1">Only quitting is allowed until the room closes.</div>
+            <div className="text-white font-bold text-lg">Waiting for a player to reconnect.</div>
+            <div className="text-red-200 text-sm mt-1">Play resumes automatically when every real-player seat is connected.</div>
+            <button
+              type="button"
+              onClick={handleQuit}
+              className="mt-4 w-full rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white hover:bg-red-600"
+            >
+              Quit Room
+            </button>
           </div>
         </div>
       )}

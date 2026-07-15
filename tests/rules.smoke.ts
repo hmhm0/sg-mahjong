@@ -1,5 +1,6 @@
 import { calculateTai, canKong, canPung, canWinWithTai, checkWin, isAutomaticWinResult, isBlockedDiscardWinByFullSuitWait, isBigThreeDragons, isDaXiSi, isWinningHand } from '../src/game/rules';
 import { createBonusTile, createFeiTile, createHonorTile, createSuitTile } from '../src/game/tiles';
+import { isSelfDrawWinMethod } from '../src/game/winMethods';
 import type { GameState, Meld, Player, Tile, Wind } from '../src/types/mahjong';
 
 declare const require: any;
@@ -157,6 +158,16 @@ function fillerWall(count: number): Tile[] {
   return Array.from({ length: count }, (_, index) =>
     createSuitTile(index % 2 === 0 ? 'characters' : 'dots', (index % 9) + 1)
   );
+}
+
+function kanKanHuHand(): Tile[] {
+  return [
+    createSuitTile('bamboo', 1), createSuitTile('bamboo', 1), createSuitTile('bamboo', 1),
+    createSuitTile('characters', 2), createSuitTile('characters', 2), createSuitTile('characters', 2),
+    createSuitTile('dots', 3), createSuitTile('dots', 3), createSuitTile('dots', 3),
+    createHonorTile('east'), createHonorTile('east'), createHonorTile('east'),
+    createHonorTile('fa'), createHonorTile('fa'),
+  ];
 }
 
 run('Fei can complete a standard win shape', () => {
@@ -417,6 +428,104 @@ run('Shi Ba Luo Han scores at its own 18-tai limit', () => {
   assertEqual(result.breakdown.length, 1, 'Shi Ba Luo Han should not stack lower patterns');
 });
 
+run('Kan Kan Hu is an 8-tai special hand plus required Zi Mo', () => {
+  const player = makePlayer(0, 'east', kanKanHuHand());
+  const state = makeState([player, makePlayer(1, 'south', []), makePlayer(2, 'west', []), makePlayer(3, 'north', [])]);
+  const result = calculateTai(state, 0, true);
+  assertEqual(result.totalTai, 9, 'Kan Kan Hu should total 9 tai after its required Zi Mo');
+  assertEqual(result.breakdown.length, 2, 'Kan Kan Hu should show only its 8-tai special and required Zi Mo');
+  assertEqual(result.breakdown[0]?.name, 'Kan Kan Hu (坎坎胡)', 'Kan Kan Hu should use the special-hand result label');
+  assertEqual(result.breakdown[0]?.tai, 8, 'Kan Kan Hu should retain its 8-tai special value');
+  assertEqual(result.breakdown[1]?.name, 'Self-Draw', 'Kan Kan Hu should show the required Zi Mo line');
+  assertEqual(result.breakdown[1]?.tai, 1, 'Kan Kan Hu Zi Mo should add 1 tai');
+  assertEqual(isAutomaticWinResult(result), true, 'Kan Kan Hu should qualify as an automatic special win');
+
+  const visibleResult = calculateTai(state, 0, true, true);
+  assertEqual(visibleResult.breakdown.some(entry => entry.name === 'Kan Kan Hu (坎坎胡)'), false, 'Visible-only scoring should not reveal concealed Kan Kan Hu');
+});
+
+run('Kan Kan Hu requires Zi Mo with four unexposed natural pungs and concealed eyes', () => {
+  const concealedPlayer = makePlayer(0, 'east', kanKanHuHand());
+  const discardState = makeState([concealedPlayer, makePlayer(1, 'south', []), makePlayer(2, 'west', []), makePlayer(3, 'north', [])]);
+  assertEqual(calculateTai(discardState, 0, false).breakdown.some(entry => entry.name.startsWith('Kan Kan Hu')), false, 'Kan Kan Hu cannot win from a discard');
+
+  const exposedPlayer = makePlayer(0, 'east', [
+    createSuitTile('characters', 2), createSuitTile('characters', 2), createSuitTile('characters', 2),
+    createSuitTile('dots', 3), createSuitTile('dots', 3), createSuitTile('dots', 3),
+    createHonorTile('east'), createHonorTile('east'), createHonorTile('east'),
+    createHonorTile('fa'), createHonorTile('fa'),
+  ], [{
+    type: 'pung',
+    tiles: [createSuitTile('bamboo', 1), createSuitTile('bamboo', 1), createSuitTile('bamboo', 1)],
+    fromPlayer: 1,
+  }]);
+  const exposedState = makeState([exposedPlayer, makePlayer(1, 'south', []), makePlayer(2, 'west', []), makePlayer(3, 'north', [])]);
+  assertEqual(calculateTai(exposedState, 0, true).breakdown.some(entry => entry.name.startsWith('Kan Kan Hu')), false, 'An exposed pung disqualifies Kan Kan Hu');
+
+  const sequencePlayer = makePlayer(0, 'east', standardWaitingHand());
+  sequencePlayer.hand.push(createSuitTile('dots', 5));
+  const sequenceState = makeState([sequencePlayer, makePlayer(1, 'south', []), makePlayer(2, 'west', []), makePlayer(3, 'north', [])]);
+  assertEqual(calculateTai(sequenceState, 0, true).breakdown.some(entry => entry.name.startsWith('Kan Kan Hu')), false, 'A sequence-based concealed hand is not Kan Kan Hu');
+
+  const feiPungPlayer = makePlayer(0, 'east', [
+    createSuitTile('bamboo', 1), createSuitTile('bamboo', 1), createFeiTile(),
+    createSuitTile('characters', 2), createSuitTile('characters', 2), createSuitTile('characters', 2),
+    createSuitTile('dots', 3), createSuitTile('dots', 3), createSuitTile('dots', 3),
+    createHonorTile('east'), createHonorTile('east'), createHonorTile('east'),
+    createHonorTile('fa'), createHonorTile('fa'),
+  ]);
+  const feiPungState = makeState([feiPungPlayer, makePlayer(1, 'south', []), makePlayer(2, 'west', []), makePlayer(3, 'north', [])]);
+  assertEqual(calculateTai(feiPungState, 0, true).breakdown.some(entry => entry.name.startsWith('Kan Kan Hu')), false, 'Fei cannot substitute inside a Kan Kan Hu pung');
+});
+
+run('Kan Kan Hu payout ignores normal Max Tai and obeys only the special cap', () => {
+  const players = [
+    { ...makePlayer(0, 'east', kanKanHuHand()), chips: 1000 },
+    { ...makePlayer(1, 'south', []), chips: 1000 },
+    { ...makePlayer(2, 'west', []), chips: 1000 },
+    { ...makePlayer(3, 'north', []), chips: 1000 },
+  ];
+  const baseConfig = {
+    taiThreshold: 10,
+    unlimitedTai: false,
+    feiCount: 4,
+    payoutTable: '010_020' as const,
+    startingChips: 1000,
+    shooterEnabled: false,
+    maxTai: 2,
+    economyEnabled: true,
+    chipSettlementMode: 'default' as const,
+  };
+
+  primeStoreState({
+    players,
+    config: {
+      ...baseConfig,
+      specialTaiCapEnabled: false,
+      specialTaiCap: 18,
+    },
+  });
+  const { useGameStore } = require('../src/store/gameStore');
+  useGameStore.getState().selfDrawWinAction(0);
+  let state = useGameStore.getState();
+  assertEqual(state.phase, 'finished', 'Kan Kan Hu should win automatically even above the ordinary tai threshold');
+  assertEqual(state.chipSettlement?.rawTai, 9, 'Kan Kan Hu settlement should preserve its 9-tai total');
+  assertEqual(state.chipSettlement?.tai, 9, 'Normal Max Tai should not cap Kan Kan Hu');
+
+  primeStoreState({
+    players,
+    config: {
+      ...baseConfig,
+      specialTaiCapEnabled: true,
+      specialTaiCap: 5,
+    },
+  });
+  useGameStore.getState().selfDrawWinAction(0);
+  state = useGameStore.getState();
+  assertEqual(state.chipSettlement?.rawTai, 9, 'Special-capped Kan Kan Hu should retain 9 raw tai');
+  assertEqual(state.chipSettlement?.tai, 5, 'Caps Max Tai for Special should cap Kan Kan Hu payout');
+});
+
 run('Tian Hu, Di Hu, and Men Hu each add ten tai', () => {
   const player = makePlayer(0, 'east', [
     createSuitTile('bamboo', 1), createSuitTile('bamboo', 2), createSuitTile('bamboo', 3),
@@ -459,7 +568,7 @@ run('Di Hu discard flow finishes the round as a 10-tai limit hand', () => {
   assertEqual(state.winner, 0, 'Di Hu claimant should be the winner');
   assertEqual(state.winMethod, 'discard', 'Di Hu should remain a discard win method');
   assertOk(state.message.includes('(10 tai)'), 'Di Hu result should use the locked 10-tai score');
-  assertOk(state.debugLogs.some(log => log.details?.isDiHu === true), 'Di Hu flow should be identified in the debug log');
+  assertEqual(state.winningDiscardPlayer, 1, 'Di Hu should preserve the dealer as the shooter');
 });
 
 run('Men Hu draw flow exposes and commits the 10-tai limit hand', () => {
@@ -488,16 +597,40 @@ run('Men Hu draw flow exposes and commits the 10-tai limit hand', () => {
 });
 
 run('Hua Shang replacement flow preserves the winning replacement tile', () => {
-  const flower = createBonusTile('flower', 1);
+  const replacementFlower = createBonusTile('flower', 2);
   const winningTile = createSuitTile('dots', 5);
   primeStoreState({
     players: [
-      makePlayer(0, 'east', standardWaitingHand()),
+      {
+        ...makePlayer(0, 'east', [
+          createSuitTile('bamboo', 1), createSuitTile('bamboo', 2), createSuitTile('bamboo', 3),
+          createSuitTile('bamboo', 4), createSuitTile('bamboo', 5), createSuitTile('bamboo', 6),
+          createSuitTile('characters', 1), createSuitTile('characters', 2), createSuitTile('characters', 3),
+          createSuitTile('dots', 5),
+        ], [
+          {
+            type: 'pung',
+            tiles: [createHonorTile('fa'), createHonorTile('fa'), createHonorTile('fa')],
+            fromPlayer: 1,
+          },
+        ], [createBonusTile('flower', 1)]),
+        chips: 1000,
+      },
       makePlayer(1, 'south', []),
       makePlayer(2, 'west', []),
       makePlayer(3, 'north', []),
     ],
-    wall: [flower, ...fillerWall(15), winningTile],
+    wall: [replacementFlower, ...fillerWall(15), winningTile],
+    config: {
+      taiThreshold: 4,
+      unlimitedTai: false,
+      feiCount: 4,
+      payoutTable: '1_2',
+      startingChips: 1000,
+      shooterEnabled: false,
+      economyEnabled: true,
+      chipSettlementMode: 'default',
+    },
   });
 
   const { useGameStore } = require('../src/store/gameStore');
@@ -509,6 +642,11 @@ run('Hua Shang replacement flow preserves the winning replacement tile', () => {
   const state = useGameStore.getState();
   assertEqual(state.phase, 'finished', 'Hua Shang commit should finish the round');
   assertEqual(state.winMethod, 'hua_shang', 'Hua Shang commit should preserve its result-screen method');
+  assertEqual(isSelfDrawWinMethod(state.winMethod, state.winningDiscardPlayer), true, 'Hua Shang results should retain Zi Mo scoring');
+  const resultScreenScore = calculateTai(state, 0, true, false, true);
+  assertEqual(resultScreenScore.totalTai, state.chipSettlement?.rawTai, 'Hua Shang result tai should match settlement tai');
+  assertEqual(resultScreenScore.totalTai, 4, 'Hua Shang fixture should total exactly 4 tai');
+  assertOk(resultScreenScore.breakdown.some(entry => entry.name === 'Self-Draw'), 'Hua Shang result should show the Zi Mo tai line');
 });
 
 run('Qi Qiang Yi transfers the eighth flower or season and ends the round', () => {
@@ -670,7 +808,13 @@ run('Fei-substituted wins are legal and score normally', () => {
 });
 
 run('Payout tables settle discard and self-draw wins with the configured rows', () => {
-  const { settleRoundChips, formatPayoutAmount, getPayoutTableLabel } = require('../src/game/chips');
+  const {
+    settleRoundChips,
+    formatPayoutAmount,
+    getChipSettlementRuleText,
+    getChipSettlementTransfers,
+    getPayoutTableLabel,
+  } = require('../src/game/chips');
   assertEqual(getPayoutTableLabel('010_020'), '$0.10 / $0.20', '010_020 label should match the non-shooter table');
   assertEqual(getPayoutTableLabel('030_060'), '$0.30 / $0.60', '030_060 label should match the non-shooter table');
   assertEqual(getPayoutTableLabel('1_2'), '$1 / $2', '1_2 label should match the non-shooter table');
@@ -700,6 +844,11 @@ run('Payout tables settle discard and self-draw wins with the configured rows', 
   assertEqual(defaultSettlement.players[3].chips, 999.9, 'Default discard settlement should charge the other non-discarding opponent 0.1 chips');
   assertEqual(defaultSettlement.summary?.mode, 'discard', 'Default discard settlement should report discard mode');
   assertEqual(defaultSettlement.summary?.settlementStyle, 'default', 'Default discard settlement should report default style');
+  assertEqual(
+    getChipSettlementRuleText(defaultSettlement.summary),
+    'Non-shooter pay: each non-discarder pays $0.10 and the discarder pays $0.20 for 1 tai.',
+    'Default discard result wording should use the amounts applied to chip balances',
+  );
 
   const shooterSettlement = settleRoundChips(players, {
     taiThreshold: 1,
@@ -715,6 +864,11 @@ run('Payout tables settle discard and self-draw wins with the configured rows', 
   assertEqual(shooterSettlement.players[1].chips, 1000, 'Shooter settlement should leave non-shooters unchanged');
   assertEqual(shooterSettlement.players[2].chips, 999.6, 'Shooter settlement should charge only the shooter');
   assertEqual(shooterSettlement.players[3].chips, 1000, 'Shooter settlement should leave the other non-shooter unchanged');
+  assertEqual(
+    getChipSettlementRuleText(shooterSettlement.summary),
+    'Shooter pay: only the shooter pays $0.40 for 1 tai.',
+    'Shooter result wording should use the amount applied to the shooter',
+  );
 
   const selfDrawSettlement = settleRoundChips(players, {
     taiThreshold: 1,
@@ -731,6 +885,71 @@ run('Payout tables settle discard and self-draw wins with the configured rows', 
   assertEqual(selfDrawSettlement.players[2].chips, 990, 'Self-draw settlement should charge each opponent 10 chips at 4 tai');
   assertEqual(selfDrawSettlement.players[3].chips, 990, 'Self-draw settlement should charge each opponent 10 chips at 4 tai');
   assertEqual(selfDrawSettlement.summary?.mode, 'self_draw', 'Self-draw settlement should report self-draw mode');
+  assertEqual(
+    getChipSettlementRuleText(selfDrawSettlement.summary),
+    'Self-draw pay: each opponent pays $10 for 4 tai.',
+    'Zi Mo result wording should use the amount applied to every opponent',
+  );
+
+  for (const settlement of [defaultSettlement, shooterSettlement, selfDrawSettlement]) {
+    const summary = settlement.summary;
+    assertOk(summary, 'Enabled payout table should produce a settlement summary');
+    const transfers = getChipSettlementTransfers(summary);
+    const totalDelta = transfers.reduce((total: number, entry: { delta: number }) => total + entry.delta, 0);
+    const payerLosses = transfers
+      .filter((entry: { delta: number }) => entry.delta < 0)
+      .reduce((total: number, entry: { delta: number }) => total + Math.abs(entry.delta), 0);
+    assertEqual(Math.round(totalDelta * 100), 0, 'Every settlement should remain zero-sum at chip precision');
+    assertEqual(
+      Math.round(summary.winnerDelta * 100),
+      Math.round(payerLosses * 100),
+      'Winner gain should equal the combined payer losses at chip precision',
+    );
+    for (const delta of summary.playerDeltas) {
+      assertEqual(
+        settlement.players[delta.playerIndex].chips,
+        1000 + delta.delta,
+        `P${delta.playerIndex + 1} final chips should exactly match the displayed settlement delta`,
+      );
+    }
+  }
+
+  const shooter030 = settleRoundChips(players, {
+    taiThreshold: 1,
+    unlimitedTai: false,
+    feiCount: 4,
+    payoutTable: '030_060',
+    startingChips: 1000,
+    shooterEnabled: true,
+    economyEnabled: true,
+    chipSettlementMode: 'default',
+  }, 0, 10, 2);
+  assertEqual(shooter030.summary?.settlementStyle, 'shooter', 'The visible Shooter toggle should be authoritative if legacy mode data drifts');
+  assertEqual(shooter030.summary?.shooterPerTai, 1231, '030_060 Shooter payout should use the supplied 10-tai Shooter row');
+  assertEqual(shooter030.players[0].chips, 2231, '030_060 10-tai Shooter win should credit $1,231');
+  assertEqual(shooter030.players[2].chips, -231, '030_060 10-tai Shooter loss should debit $1,231');
+  assertEqual(
+    getChipSettlementRuleText(shooter030.summary),
+    'Shooter pay: only the shooter pays $1,231 for 10 tai.',
+    '030_060 Shooter result wording should match the corrected chip transfer',
+  );
+  const shooter030Rows = [4, 7, 11, 20, 40, 79, 155, 308, 616, 1231];
+  shooter030Rows.forEach((expected: number, index: number) => {
+    const tai = index + 1;
+    const settlement = settleRoundChips(players, {
+      taiThreshold: 1,
+      unlimitedTai: false,
+      feiCount: 4,
+      payoutTable: '030_060',
+      startingChips: 1000,
+      shooterEnabled: true,
+      economyEnabled: true,
+      chipSettlementMode: 'shooter',
+    }, 0, tai, 2);
+    assertEqual(settlement.summary?.shooterPerTai, expected, `030_060 Shooter row should match the supplied ${tai}-tai payout`);
+    assertEqual(settlement.summary?.winnerDelta, expected, `030_060 ${tai}-tai winner gain should match the result amount`);
+    assertEqual(settlement.summary?.playerDeltas[2]?.delta, -expected, `030_060 ${tai}-tai shooter loss should match the result amount`);
+  });
 
   const special030SelfDraw = settleRoundChips(players, {
     taiThreshold: 1,
@@ -806,6 +1025,287 @@ run('Payout tables settle discard and self-draw wins with the configured rows', 
   assertEqual(specialCapOnSettlement.summary?.tai, 9, 'Special cap should limit special hands to the configured tai');
   assertEqual(specialCapOnSettlement.summary?.maxTai, 2, 'Special cap should not change the normal max tai cap');
   assertEqual(specialCapOnSettlement.summary?.selfDrawPerTai, 51.2, 'Special cap should use the 9-tai row for 010_020');
+});
+
+run('Hua Shang and Kan Kan Hu chip settlement matches the result-screen payout rows', () => {
+  const { settleRoundChips, getChipSettlementRuleText } = require('../src/game/chips');
+  const players = [
+    { ...makePlayer(0, 'east', []), chips: 1000 },
+    { ...makePlayer(1, 'south', []), chips: 1000 },
+    { ...makePlayer(2, 'west', []), chips: 1000 },
+    { ...makePlayer(3, 'north', []), chips: 1000 },
+  ];
+  const config = {
+    taiThreshold: 4,
+    unlimitedTai: false,
+    feiCount: 4,
+    payoutTable: '1_2' as const,
+    startingChips: 1000,
+    shooterEnabled: false,
+    maxTai: 10,
+    specialTaiCapEnabled: false,
+    specialTaiCap: 18,
+    economyEnabled: true,
+    chipSettlementMode: 'default' as const,
+  };
+
+  const huaShang = settleRoundChips(players, config, 0, 4, null);
+  assertEqual(huaShang.summary?.selfDrawPerTai, 16, '4-tai Hua Shang should use the $16 Zi Mo row');
+  assertEqual(huaShang.summary?.winnerDelta, 48, '4-tai Hua Shang winner should receive $48 total');
+  assertEqual(huaShang.players[0].chips, 1048, 'Hua Shang winner chips should increase by $48');
+  assertEqual(huaShang.players[1].chips, 984, 'Each Hua Shang opponent should pay $16');
+  assertEqual(getChipSettlementRuleText(huaShang.summary), 'Self-draw pay: each opponent pays $16 for 4 tai.', 'Hua Shang result wording should match its deltas');
+
+  const kanKanHu = settleRoundChips(players, config, 0, 9, null, 9);
+  assertEqual(kanKanHu.summary?.selfDrawPerTai, 512, '9-tai Kan Kan Hu should use the $512 Zi Mo row');
+  assertEqual(kanKanHu.summary?.winnerDelta, 1536, '9-tai Kan Kan Hu winner should receive $1,536 total');
+  assertEqual(kanKanHu.players[0].chips, 2536, 'Kan Kan Hu winner chips should increase by $1,536');
+  assertEqual(kanKanHu.players[1].chips, 488, 'Each Kan Kan Hu opponent should pay $512');
+  assertEqual(getChipSettlementRuleText(kanKanHu.summary), 'Self-draw pay: each opponent pays $512 for 9 tai.', 'Kan Kan Hu result wording should match its deltas');
+
+  const cappedKanKanHu = settleRoundChips(players, {
+    ...config,
+    specialTaiCapEnabled: true,
+    specialTaiCap: 5,
+  }, 0, 9, null, 5);
+  assertEqual(cappedKanKanHu.summary?.tai, 5, 'Special cap should select the 5-tai Kan Kan Hu payout row');
+  assertEqual(cappedKanKanHu.summary?.selfDrawPerTai, 32, 'Special-capped Kan Kan Hu should charge $32 per opponent');
+  assertEqual(cappedKanKanHu.summary?.winnerDelta, 96, 'Special-capped Kan Kan Hu winner should receive $96 total');
+  assertEqual(cappedKanKanHu.players[0].chips, 1096, 'Special-capped winner chips should increase by $96');
+  assertEqual(cappedKanKanHu.players[1].chips, 968, 'Each special-capped opponent should pay $32');
+  assertEqual(getChipSettlementRuleText(cappedKanKanHu.summary), 'Self-draw pay: each opponent pays $32 for 5 tai.', 'Special-cap wording should match applied deltas');
+});
+
+run('Every configured payout row is used consistently for discard, Shooter, and Zi Mo', () => {
+  const { settleRoundChips } = require('../src/game/chips');
+  const players = [
+    { ...makePlayer(0, 'east', []), chips: 1000000 },
+    { ...makePlayer(1, 'south', []), chips: 1000000 },
+    { ...makePlayer(2, 'west', []), chips: 1000000 },
+    { ...makePlayer(3, 'north', []), chips: 1000000 },
+  ];
+  const tables = [
+    {
+      key: '010_020',
+      nonShooter: [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6, 819.2, 1638.4, 3276.8, 6553.6, 13107.2],
+      shooter: [0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6, 819.2, 1638.4, 3276.8, 6553.6, 13107.2, 26214.4, 52428.8],
+      selfDraw: [0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6, 51.2, 102.4, 204.8, 409.6, 819.2, 1638.4, 3276.8, 6553.6, 13107.2, 26214.4],
+    },
+    {
+      key: '030_060',
+      nonShooter: [1, 2, 3, 5, 10, 20, 39, 77, 154, 308, 615, 1229, 2458, 4916, 9831, 19661, 39322, 78644],
+      shooter: [4, 7, 11, 20, 40, 79, 155, 308, 616, 1231, 2459, 4916, 9832, 19663, 39323, 78644, 157288, 314575],
+      selfDraw: [2, 3, 5, 10, 20, 39, 77, 154, 308, 615, 1229, 2458, 4916, 9831, 19661, 39322, 78644, 157287],
+    },
+    {
+      key: '1_2',
+      nonShooter: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072],
+      shooter: [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288],
+      selfDraw: [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144],
+    },
+  ] as const;
+
+  for (const table of tables) {
+    for (let index = 0; index < 18; index++) {
+      const tai = index + 1;
+      const baseConfig = {
+        taiThreshold: 1,
+        unlimitedTai: false,
+        feiCount: 4,
+        payoutTable: table.key,
+        startingChips: 1000000,
+        maxTai: 10,
+        economyEnabled: true,
+      };
+      const discard = settleRoundChips(players, {
+        ...baseConfig,
+        shooterEnabled: false,
+        chipSettlementMode: 'default',
+      }, 0, tai, 2, tai);
+      const shooter = settleRoundChips(players, {
+        ...baseConfig,
+        shooterEnabled: true,
+        chipSettlementMode: 'shooter',
+      }, 0, tai, 2, tai);
+      const selfDraw = settleRoundChips(players, {
+        ...baseConfig,
+        shooterEnabled: false,
+        chipSettlementMode: 'default',
+      }, 0, tai, null, tai);
+
+      assertEqual(discard.summary?.nonShooterPerTai, table.nonShooter[index], `${table.key} ${tai}-tai non-discarder row should match configuration`);
+      assertEqual(discard.summary?.selfDrawPerTai, table.selfDraw[index], `${table.key} ${tai}-tai discarder row should match configuration`);
+      assertEqual(shooter.summary?.shooterPerTai, table.shooter[index], `${table.key} ${tai}-tai Shooter row should match configuration`);
+      assertEqual(selfDraw.summary?.selfDrawPerTai, table.selfDraw[index], `${table.key} ${tai}-tai Zi Mo row should match configuration`);
+    }
+  }
+});
+
+run('Chip match-over detection and final standings use settled balances', () => {
+  const { formatPayoutAmount, getChipStandings, isChipMatchOver } = require('../src/game/chips');
+  const players = [
+    { ...makePlayer(0, 'east', []), chips: 1120 },
+    { ...makePlayer(1, 'south', []), chips: 0 },
+    { ...makePlayer(2, 'west', []), chips: 980 },
+    { ...makePlayer(3, 'north', []), chips: -100 },
+  ];
+  const economyConfig = {
+    taiThreshold: 1,
+    unlimitedTai: false,
+    feiCount: 4,
+    payoutTable: '1_2' as const,
+    startingChips: 1000,
+    shooterEnabled: false,
+    economyEnabled: true,
+    chipSettlementMode: 'default' as const,
+  };
+
+  assertEqual(isChipMatchOver(players, economyConfig), true, 'A settled $0 or negative balance should end the chip match');
+  assertEqual(isChipMatchOver(players, { ...economyConfig, economyEnabled: false }), false, 'Disabled chip economy should not trigger match over');
+  assertEqual(isChipMatchOver(players, { ...economyConfig, payoutTable: 'none' }), false, 'No-payout games should not trigger chip match over');
+  const standings = getChipStandings(players);
+  assertEqual(standings.map((standing: any) => standing.playerIndex).join(','), '0,2,1,3', 'Final standings should rank players by chips descending');
+  assertEqual(standings[0].chips, 1120, 'The top player should retain the highest settled chip balance');
+  assertEqual(formatPayoutAmount(-100), '-$100', 'Negative final balances should use readable currency formatting');
+});
+
+run('Match Play Again readiness includes bots and requires every seat', () => {
+  const { createMatchReadyState, areAllMatchSeatsReady, isChipMatchOverState } = require('../../../server/matchLifecycle.cjs');
+  const players = [
+    { ...makePlayer(0, 'east', []), chips: 1000, isHuman: true },
+    { ...makePlayer(1, 'south', []), chips: 0, isHuman: true },
+    { ...makePlayer(2, 'west', []), chips: 1000, isHuman: false },
+    { ...makePlayer(3, 'north', []), chips: 1000, isHuman: false },
+  ];
+  const state = makeState(players);
+  state.phase = 'finished';
+  state.winner = 0;
+  state.chipSettlement = {
+    payoutTable: '1_2',
+    settlementStyle: 'default',
+    mode: 'discard',
+    tai: 1,
+    rawTai: 1,
+    maxTai: 10,
+    winnerIndex: 0,
+    winnerDelta: 4,
+    playerDeltas: [
+      { playerIndex: 0, delta: 4 },
+      { playerIndex: 1, delta: -2 },
+      { playerIndex: 2, delta: -1 },
+      { playerIndex: 3, delta: -1 },
+    ],
+    nonShooterPerTai: 1,
+    shooterPerTai: 4,
+    selfDrawPerTai: 2,
+    shooterIndex: 1,
+  };
+  state.config = {
+    ...state.config,
+    payoutTable: '1_2',
+    startingChips: 1000,
+    economyEnabled: true,
+  };
+
+  assertEqual(isChipMatchOverState(state), true, 'The VM should detect the same settled match-over boundary as the browser');
+  const ready = createMatchReadyState(players);
+  assertEqual(ready.join(','), 'false,false,true,true', 'Bot seats should be ready automatically');
+  assertEqual(areAllMatchSeatsReady(ready), false, 'Human seats must still press Play Again');
+  ready[0] = true;
+  ready[1] = true;
+  assertEqual(areAllMatchSeatsReady(ready), true, 'The rematch countdown should start only after all four seats are ready');
+});
+
+run('Stale multiplayer state cannot replace an active singleplayer game', () => {
+  const { shouldAcceptMultiplayerState } = require('../src/utils/multiplayerState');
+  assertEqual(
+    shouldAcceptMultiplayerState({ phase: 'playing', isMultiplayer: false }, 'ABCD'),
+    false,
+    'An active singleplayer game should reject delayed room state',
+  );
+  assertEqual(
+    shouldAcceptMultiplayerState({ phase: 'finished', isMultiplayer: false }, 'ABCD'),
+    false,
+    'A finished singleplayer game should reject delayed room state',
+  );
+  assertEqual(
+    shouldAcceptMultiplayerState({ phase: 'playing', isMultiplayer: true }, 'ABCD'),
+    true,
+    'An active multiplayer game should continue accepting canonical room state',
+  );
+  assertEqual(
+    shouldAcceptMultiplayerState({ phase: 'setup', isMultiplayer: false }, 'ABCD'),
+    true,
+    'A stored-room reconnect should accept its initial multiplayer snapshot',
+  );
+  assertEqual(
+    shouldAcceptMultiplayerState({ phase: 'setup', isMultiplayer: false }, ''),
+    false,
+    'State updates should be rejected after room identity is cleared',
+  );
+});
+
+run('Multiplayer move-history deltas are compact and idempotent', () => {
+  const { buildMultiplayerStatePatch } = require('../src/utils/multiplayerState');
+  const current = {
+    ...makeState([
+      makePlayer(0, 'east', []),
+      makePlayer(1, 'south', []),
+      makePlayer(2, 'west', []),
+      makePlayer(3, 'north', []),
+    ]),
+    moveHistory: ['first move'],
+  } as any;
+  const message = {
+    full: false,
+    state: { currentPlayerIndex: 1 },
+    moveHistoryStart: 1,
+    moveHistoryAppend: ['second move'],
+  };
+  const firstPatch = buildMultiplayerStatePatch(current, message);
+  const next = { ...current, ...firstPatch };
+  const secondPatch = buildMultiplayerStatePatch(next, message);
+  const repeated = { ...next, ...secondPatch };
+  assertEqual(next.moveHistory.join(','), 'first move,second move', 'Move-history deltas should append new canonical entries');
+  assertEqual(repeated.moveHistory.join(','), 'first move,second move', 'Duplicate listeners must not duplicate move-history entries');
+});
+
+run('Canonical patches preserve references for unchanged table data', () => {
+  const { buildMultiplayerStatePatch } = require('../src/utils/multiplayerState');
+  const current = {
+    ...makeState([
+      makePlayer(0, 'east', [createSuitTile('bamboo', 1)]),
+      makePlayer(1, 'south', [createSuitTile('dots', 2)]),
+      makePlayer(2, 'west', []),
+      makePlayer(3, 'north', []),
+    ]),
+    wall: [createSuitTile('characters', 3)],
+    moveHistory: [],
+  } as any;
+  const incoming = JSON.parse(JSON.stringify(current));
+  incoming.currentPlayerIndex = 1;
+  const patch = buildMultiplayerStatePatch(current, { full: true, state: incoming });
+  assertEqual(patch.players, current.players, 'Unchanged player rows should retain the current array reference');
+  assertEqual(patch.players[0], current.players[0], 'Unchanged player objects should retain their references');
+  assertEqual(patch.wall, current.wall, 'An unchanged wall should retain its current reference');
+
+  incoming.players[1].hand.push(createSuitTile('dots', 3));
+  const changedPatch = buildMultiplayerStatePatch(current, { full: true, state: incoming });
+  assertEqual(changedPatch.players[0], current.players[0], 'Unchanged seats should remain referentially stable');
+  assertEqual(changedPatch.players[1] === current.players[1], false, 'A changed seat must receive the new canonical player object');
+});
+
+run('Multiplayer revisions reject duplicate snapshots and reset for reconnects', () => {
+  const { MultiplayerStateRevisionGate } = require('../src/utils/multiplayerState');
+  const gate = new MultiplayerStateRevisionGate();
+  assertEqual(gate.shouldApply('ABCD', 1), true, 'The first canonical revision should apply');
+  assertEqual(gate.shouldApply('ABCD', 1), false, 'The same canonical revision should not apply twice');
+  assertEqual(gate.shouldApply('ABCD', 0), false, 'An older canonical revision should be rejected');
+  assertEqual(gate.shouldApply('ABCD', 2), true, 'A newer canonical revision should apply');
+  gate.reset('ABCD');
+  assertEqual(gate.shouldApply('ABCD', 2), true, 'Reconnect reset should accept a full snapshot at the current revision');
+  assertEqual(gate.shouldApply('WXYZ', 1), true, 'A newly recreated room should start a separate revision sequence');
+  assertEqual(gate.shouldApply('', 2), false, 'Snapshots without an active room identity should be rejected');
 });
 
 run('Ordinary draws come from the front of the live wall', () => {
@@ -1558,9 +2058,9 @@ run('Fresh multiplayer setup starts with the dealer as the first player', () => 
       feiCount: 4,
       payoutTable: 'none',
       startingChips: 1000,
-      shooterEnabled: false,
+      shooterEnabled: true,
       economyEnabled: false,
-      chipSettlementMode: 'default',
+      chipSettlementMode: 'shooter',
     },
     seed: 777777,
     roster: [
@@ -1572,6 +2072,43 @@ run('Fresh multiplayer setup starts with the dealer as the first player', () => 
   });
   assertEqual(fresh.state.currentPlayerIndex, fresh.state.dealerPlayerId, 'Dealer should take the first turn on a new hand');
   assertEqual(fresh.state.players.every((p: any) => p.chips === 1000), true, 'Fresh multiplayer setup should seed all players with the configured starting chips');
+  assertEqual(fresh.state.config.shooterEnabled, true, 'Multiplayer state should preserve the Shooter toggle');
+  assertEqual(fresh.state.config.chipSettlementMode, 'shooter', 'Multiplayer state should preserve the compatible Shooter settlement mode');
+});
+
+run('Multiplayer rematch setup preserves settings and resets the match', () => {
+  const { buildInitialMultiplayerState } = require('../../../server/roundSetup.cjs');
+  const config = {
+    taiThreshold: 6,
+    unlimitedTai: false,
+    feiCount: 12,
+    payoutTable: '030_060',
+    startingChips: 2500,
+    shooterEnabled: true,
+    maxTai: 8,
+    specialTaiCapEnabled: true,
+    specialTaiCap: 13,
+    economyEnabled: true,
+    chipSettlementMode: 'shooter',
+  };
+  const roster = [
+    { name: 'Host', isHuman: true },
+    { name: 'Friend', isHuman: true },
+    { name: 'Sakura', isHuman: false },
+    { name: 'Kenji', isHuman: false },
+  ];
+  const rematch = buildInitialMultiplayerState({
+    config,
+    seed: 246810,
+    roster,
+    previousState: null,
+  });
+
+  assertEqual(JSON.stringify(rematch.state.config), JSON.stringify(config), 'A new-room rematch should preserve the exact original settings');
+  assertEqual(rematch.state.players.every((player: any) => player.chips === 2500), true, 'A new-room rematch should reset every seat to Starting Chips');
+  assertEqual(rematch.state.players.map((player: any) => player.name).join(','), 'Host,Friend,Sakura,Kenji', 'A new-room rematch should preserve the roster');
+  assertEqual(rematch.state.roundWind, 'east', 'A new-room rematch should reset to the East round');
+  assertEqual(rematch.state.dealerCount, 0, 'A new-room rematch should reset the round counter');
 });
 
 run('Discard wins need one more tai than self-draw wins', () => {

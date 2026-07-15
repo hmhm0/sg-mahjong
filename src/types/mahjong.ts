@@ -129,6 +129,9 @@ export interface GameState {
   dealerPlayerId: number | null;
   chipSettlement: ChipSettlementSummary | null;
   debugLogs: DebugLogEntry[];
+  waitingForRemoteAction?: boolean;
+  pendingRemoteActionLabel?: string | null;
+  lastRemoteActionLatencyMs?: number | null;
 }
 
 export type Direction = 'player' | 'left' | 'across' | 'right';

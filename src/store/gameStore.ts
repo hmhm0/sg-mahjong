@@ -1,5 +1,6 @@
-import { create } from 'zustand';
-import type { GameState, GameConfig, Tile, Meld, Player, Wind, DebugLogEntry } from '../types/mahjong';
+import { create, type StateCreator } from 'zustand';
+import { createStore } from 'zustand/vanilla';
+import type { GameState, GameConfig, Tile, Meld, Player, Wind } from '../types/mahjong';
 import { buildDeck, shuffleDeck, sortHand, isFei, isBonus, tileDisplay } from '../game/tiles';
 import { isWinningHand, calculateTai, canChi, canPung, canKong, canSelfKong, canUpgradePungToKong, canWinWithTai, isThirteenWonders, isAutomaticWinResult, isBlockedDiscardWinByFullSuitWait } from '../game/rules';
 import { settleRoundChips } from '../game/chips';
@@ -22,7 +23,6 @@ function findLastMatchingIndex<T>(items: T[], predicate: (item: T) => boolean): 
 
 const WIND_ORDER: Wind[] = ['east', 'south', 'west', 'north'];
 const AI_NAMES = ['Sakura', 'Mei Lin', 'Kenji'];
-const MAX_DEBUG_LOGS = 200;
 const MAX_MOVE_HISTORY = 300;
 // Real-table flow: draw from one wall, with back draws used for replacements.
 const DEAD_WALL_SIZE = 15;
@@ -54,7 +54,8 @@ function getSpecialHandPayoutTai(result: { totalTai: number; breakdown: { name: 
     entry.name.startsWith('Qi Qiang Yi') ||
     entry.name.startsWith('Hua Hu') ||
     entry.name.startsWith('Big Three Dragons') ||
-    entry.name.startsWith('Da Xi Si')
+    entry.name.startsWith('Da Xi Si') ||
+    entry.name.startsWith('Kan Kan Hu')
   );
   if (!isSpecialHand) return null;
   if (!config.specialTaiCapEnabled) return result.totalTai;
@@ -140,6 +141,7 @@ function finishRoundOnWallExhaustion(
 interface GameStore extends GameState {
   // Actions
   startGame: (config: GameConfig, humanWind?: Wind) => void;
+  startNewMatch: (config: GameConfig) => void;
   drawTile: (playerIndex: number, isBonusReplacement?: boolean) => void;
   discardTile: (playerIndex: number, tileIndex: number) => void;
   claimTile: (playerIndex: number, claimType: 'chi' | 'pung' | 'kong' | 'win', chiTiles?: Tile[]) => void;
@@ -176,18 +178,9 @@ interface GameStore extends GameState {
   isHost: boolean;
   myPlayerIndex: number;
   waitingForRemoteAction: boolean;
+  pendingRemoteActionLabel: string | null;
+  lastRemoteActionLatencyMs: number | null;
   applyRemoteAction: (playerIndex: number, actionType: string, data: any) => void;
-  clearDebugLogs: () => void;
-}
-
-interface DebugStateSource {
-  players: Player[];
-  wall: Tile[];
-  deadWall: Tile[];
-  currentPlayerIndex: number;
-  roundWind: Wind;
-  discardHistory: Tile[];
-  waitingForClaim?: GameStore['waitingForClaim'];
 }
 
 type GameStoreSetter = (
@@ -204,65 +197,14 @@ function describePlayer(player?: Player, fallbackIndex?: number): string {
   return name;
 }
 
-function snapshotPlayers(players: Player[]) {
-  return players.map((player, playerIndex) => ({
-    playerIndex,
-    name: player.name,
-    isHuman: player.isHuman,
-    seatWind: player.seatWind,
-    hand: player.hand.map(tileDisplay),
-    bonusTiles: (player.bonusTiles || []).map(tileDisplay),
-    melds: player.melds.map(meld => ({
-      type: meld.type,
-      tiles: meld.tiles.map(tileDisplay),
-      fromPlayer: meld.fromPlayer,
-    })),
-    discards: player.discards.map(tileDisplay),
-  }));
-}
-
-function buildDebugEntry(
-  state: DebugStateSource,
-  type: string,
-  message: string,
-  details?: Record<string, unknown>,
-): DebugLogEntry {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    ts: new Date().toISOString(),
-    type,
-    message,
-    currentPlayerIndex: state.currentPlayerIndex,
-    roundWind: state.roundWind,
-    wallCount: state.wall.length,
-    snapshot: {
-      players: snapshotPlayers(state.players),
-      discardHistory: state.discardHistory.map(tileDisplay),
-      waitingForClaim: state.waitingForClaim
-        ? {
-            tile: describeTile(state.waitingForClaim.tile),
-            fromPlayer: state.waitingForClaim.fromPlayer,
-            eligiblePlayers: state.waitingForClaim.eligiblePlayers.map(entry => ({
-              playerIndex: entry.playerIndex,
-              actions: [...entry.actions],
-            })),
-          }
-        : undefined,
-    },
-    details,
-  };
-}
-
 function appendDebugLog(
-  set: GameStoreSetter,
-  sourceState: DebugStateSource,
-  type: string,
-  message: string,
-  details?: Record<string, unknown>,
+  _set: GameStoreSetter,
+  _sourceState: unknown,
+  _type: string,
+  _message: string,
+  _details?: Record<string, unknown>,
 ) {
-  set(state => ({
-    debugLogs: [...state.debugLogs, buildDebugEntry(sourceState, type, message, details)].slice(-MAX_DEBUG_LOGS),
-  }));
+  // Developer-log snapshots are intentionally disabled.
 }
 
 function appendMoveHistory(history: string[], entry: string): string[] {
@@ -347,9 +289,12 @@ const INITIAL_STATE: GameState = {
   dealerPlayerId: null,
   chipSettlement: null,
   debugLogs: [],
+  waitingForRemoteAction: false,
+  pendingRemoteActionLabel: null,
+  lastRemoteActionLatencyMs: null,
 };
 
-export const useGameStore = create<GameStore>((set, get) => ({
+const createGameStoreState: StateCreator<GameStore> = (set, get) => ({
   ...INITIAL_STATE,
   showConfig: true,
   selfDrawWin: false,
@@ -359,7 +304,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   isHost: false,
   myPlayerIndex: 0,
   waitingForRemoteAction: false,
-  clearDebugLogs: () => set({ debugLogs: [] }),
+  pendingRemoteActionLabel: null,
+  lastRemoteActionLatencyMs: null,
 isHuaShang: false,
 isKangShang: false,
 isMenHu: false,
@@ -655,6 +601,29 @@ dealerPlayerId: null,
         }
       }, 800);
     }
+  },
+
+  startNewMatch: (config: GameConfig) => {
+    const winds: Wind[] = ['east', 'south', 'west', 'north'];
+    const humanWind = winds[Math.floor(Math.random() * winds.length)];
+    set({
+      ...INITIAL_STATE,
+      config,
+      showConfig: false,
+      nextDealerPlayerId: null,
+      dealerPlayerId: null,
+      dealerCount: 0,
+      roundWind: 'east',
+      selfDrawWin: false,
+      selfKongData: null,
+      isHuaShang: false,
+      isKangShang: false,
+      isMenHu: false,
+      isTW: false,
+      waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] },
+      message: 'Starting a new match...',
+    });
+    get().startGame(config, humanWind);
   },
 
   drawTile: (playerIndex: number, isBonusReplacement: boolean = false) => {
@@ -1894,7 +1863,10 @@ dealerPlayerId: null,
     const prevRoundWind = get().roundWind || 'east';
   set({ ...INITIAL_STATE, showConfig: true, selfDrawWin: false, isHuaShang: false, isKangShang: false, isMenHu: false, isTW: false, nextDealerPlayerId: nextId, dealerCount: prevDealerCount, roundWind: prevRoundWind, selfKongData: null, waitingForClaim: { tile: null, fromPlayer: -1, eligiblePlayers: [] }, message: 'Configure and start a new game!' });
   },
-}));
+});
+
+export const createGameStore = () => createStore<GameStore>(createGameStoreState);
+export const useGameStore = create<GameStore>(createGameStoreState);
 
 function handleAIClaims(
   get: () => GameStore,

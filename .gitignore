@@ -1,6 +1,7 @@
 node_modules/
 dist/
 tests/dist/
+server/.data/
 .DS_Store
 *.local
 .env

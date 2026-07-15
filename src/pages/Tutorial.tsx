@@ -29,7 +29,7 @@ const TUTORIAL_STEPS = [
   },
   {
     title: "Tai Scoring",
-    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +4 tai\nAll Pungs: +3 tai\nBig Three Dragons: +10 tai (automatic win)\nThirteen Wonders: +13 tai (automatic win)\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nSpecial hands use their own maximum tai and do not stack with smaller pattern bonuses. The minimum tai to win is configurable."
+    content: "Tai is the scoring system. Common sources of tai:\n\nWind Pung/Dragon Pung: +1 tai each\nHalf Flush (same suit + honors): +2 tai\nFull Flush (same suit only): +4 tai\nAll Pungs: +3 tai\nBig Three Dragons: +10 tai (automatic win)\nThirteen Wonders: +13 tai (automatic win)\nKan Kan Hu (坎坎胡): 8 tai special + 1 tai for its required Zi Mo, totaling 9 tai\nSelf-Draw: +1 tai\nConcealed Hand: +1 tai\n\nSpecial hands use their own maximum tai and do not stack with smaller pattern bonuses. Kan Kan Hu only adds its required Zi Mo and is affected only by Caps Max Tai for Special. The minimum tai to win is configurable."
   },
   {
     title: "Winning",

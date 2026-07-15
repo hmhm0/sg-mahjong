@@ -195,6 +195,19 @@ export function Rules() {
             </div>
           </Section>
 
+          <Section title="Kan Kan Hu (坎坎胡)" icon="🀄">
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Kan Kan Hu is an <strong>8 tai</strong> special hand</li>
+              <li>The winning tile must be drawn by <strong>Zi Mo (Self-Draw)</strong></li>
+              <li>The required Zi Mo adds <strong>+1 tai</strong>, producing <strong>9 tai total</strong></li>
+              <li>The concealed hand must contain <strong>four unexposed pungs and unexposed eyes</strong></li>
+              <li>Any exposed chi, pung, or kong disqualifies Kan Kan Hu</li>
+              <li>Fei cannot substitute inside any of the four pungs</li>
+              <li>No ordinary tai other than the required Zi Mo stacks onto Kan Kan Hu</li>
+              <li>Only <strong>Caps Max Tai for Special</strong> can cap its payout</li>
+            </ul>
+          </Section>
+
           <Section title="FAQ" icon="❓">
             <div className="space-y-3 text-sm">
               <div>

@@ -24,6 +24,7 @@ rsync -az --delete \
   --exclude '.codex/' \
   --exclude 'node_modules/' \
   --exclude 'dist/' \
+  --exclude 'server/.data/' \
   --exclude '.env' \
   --exclude '.env.*' \
   --exclude '.DS_Store' \
